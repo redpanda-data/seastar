@@ -186,6 +186,8 @@ public:
 
     void set_content_streaming(bool b);
 
+    future<> listen(socket_address addr, shared_ptr<seastar::tls::server_credentials> credentials);
+    future<> listen(socket_address addr, listen_options lo, shared_ptr<seastar::tls::server_credentials> credentials);
     future<> listen(socket_address addr, listen_options lo);
     future<> listen(socket_address addr);
     future<> stop();

@@ -473,14 +473,28 @@ void http_server::set_content_streaming(bool b) {
     _content_streaming = b;
 }
 
-future<> http_server::listen(socket_address addr, listen_options lo) {
-    if (_credentials) {
-        _listeners.push_back(seastar::tls::listen(_credentials, addr, lo));
+future<> http_server::listen(socket_address addr, listen_options lo, 
+            shared_ptr<seastar::tls::server_credentials> listener_credentials) {
+    
+    if (listener_credentials) {
+        _listeners.push_back(seastar::tls::listen(listener_credentials, addr, lo));
     } else {
         _listeners.push_back(seastar::listen(addr, lo));
     }
     return do_accepts(_listeners.size() - 1);
 }
+
+future<> http_server::listen(socket_address addr, listen_options lo) {
+    return listen(addr, lo, _credentials);
+}
+
+future<> http_server::listen(socket_address addr, 
+            shared_ptr<seastar::tls::server_credentials> listener_credentials) {
+    listen_options lo;
+    lo.reuse_address = true;
+    return listen(addr, lo, listener_credentials);
+}
+
 future<> http_server::listen(socket_address addr) {
     listen_options lo;
     lo.reuse_address = true;
