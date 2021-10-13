@@ -39,6 +39,7 @@
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/scattered_message.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/backtrace.hh>
 
 namespace seastar {
 
@@ -380,7 +381,11 @@ public:
         : _fd(std::move(fd)), _size(_fd.buffer_size()), _trim_to_size(true) {}
     output_stream(output_stream&&) noexcept = default;
     output_stream& operator=(output_stream&&) noexcept = default;
-    ~output_stream() { assert(!_in_batch && "Was this stream properly closed?"); }
+    ~output_stream() {
+        // use throw_with_backtrace instead of assert because sometimes
+        // seastar does not include a backtrace with a failed assert
+        if (!_in_batch) throw_with_backtrace<std::runtime_error>("Was this stream properly closed?");
+    }
     future<> write(const char_type* buf, size_t n) noexcept;
     future<> write(const char_type* buf) noexcept;
 
