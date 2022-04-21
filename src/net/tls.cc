@@ -22,6 +22,7 @@
 #include <gnutls/gnutls.h>
 #include <gnutls/x509.h>
 #include <system_error>
+#include <variant>
 
 #include <seastar/core/loop.hh>
 #include <seastar/core/reactor.hh>
@@ -1060,14 +1061,16 @@ public:
         });
     }
 
-    future<> do_handshake() {
+    future<std::optional<session_dn>> do_handshake(bool fetch_dn) {
+        using result_t = std::optional<session_dn>;
         if (_connected) {
-            return make_ready_future<>();
+            return make_ready_future<result_t>();
         }
         if (_type == type::CLIENT && !_hostname.empty()) {
             gnutls_server_name_set(*this, GNUTLS_NAME_DNS, _hostname.data(), _hostname.size());
         }
         try {
+            std::optional<session_dn> dn;
             auto res = gnutls_handshake(*this);
             if (res < 0) {
                 switch (res) {
@@ -1076,22 +1079,22 @@ public:
                     // If none is pending, it should be a no-op
                 {
                     int dir = gnutls_record_get_direction(*this);
-                    return wait_for_output().then([this, dir] {
+                    return wait_for_output().then([this, dir, fetch_dn] {
                         // we actually E_AGAIN:ed in a write. Don't
                         // wait for input.
                         if (dir == 1) {
-                            return do_handshake();
+                            return do_handshake(fetch_dn);
                         }
-                        return wait_for_input().then([this] {
-                            return do_handshake();
+                        return wait_for_input().then([this, fetch_dn] {
+                            return do_handshake(fetch_dn);
                         });
                     });
                 }
                 case GNUTLS_E_NO_CERTIFICATE_FOUND:
-                    return make_exception_future<>(verification_error("No certificate was found"));
+                    return make_exception_future<result_t>(verification_error("No certificate was found"));
 #if GNUTLS_VERSION_NUMBER >= 0x030406
                 case GNUTLS_E_CERTIFICATE_ERROR:
-                    verify(); // should throw. otherwise, fallthrough
+                    dn = verify(fetch_dn); // should throw. otherwise, fallthrough
 #endif
                 default:
                     // Send the handshake error returned by gnutls_handshake()
@@ -1103,36 +1106,38 @@ public:
                         // Return to the caller the original handshake error.
                         // If send_alert() *also* failed, ignore that.
                         f.ignore_ready_future();
-                        return make_exception_future<>(std::system_error(res, glts_errorc));
+                        return make_exception_future<result_t>(std::system_error(res, glts_errorc));
                     });
                 }
             }
             if (_type == type::CLIENT || _creds->get_client_auth() != client_auth::NONE) {
-                verify();
+                dn = verify(fetch_dn);
             }
             _connected = true;
             // make sure we reset output_pending
-            return wait_for_output();
+            return wait_for_output().then([dn = std::move(dn)] () mutable {
+                return make_ready_future<result_t>(std::move(dn));
+            });
         } catch (...) {
-            return make_exception_future<>(std::current_exception());
+            return make_exception_future<result_t>(std::current_exception());
         }
     }
-    future<> handshake() {
+    future<std::optional<session_dn>> handshake(bool fetch_dn = false) {
         // maybe load system certificates before handshake, in case we
         // have not done so yet...
         if (_creds->need_load_system_trust()) {
-            return _creds->maybe_load_system_trust().then([this] {
-               return handshake();
+            return _creds->maybe_load_system_trust().then([this, fetch_dn] {
+               return handshake(fetch_dn);
             });
         }
         // acquire both semaphores to sync both read & write
-        return with_semaphore(_in_sem, 1, [this] {
-            return with_semaphore(_out_sem, 1, [this] {
-                return do_handshake().handle_exception([this](auto ep) {
+        return with_semaphore(_in_sem, 1, [this, fetch_dn] {
+            return with_semaphore(_out_sem, 1, [this, fetch_dn] {
+                return do_handshake(fetch_dn).handle_exception([this](auto ep) {
                     if (!_error) {
                         _error = ep;
                     }
-                    return make_exception_future<>(_error);
+                    return make_exception_future<std::optional<session_dn>>(_error);
                 });
             });
         });
@@ -1169,7 +1174,7 @@ public:
 #if GNUTLS_VERSION_NUMBER >= 0x030406
     static int verify_wrapper(gnutls_session_t gs) {
         try {
-            from_transport_ptr(gnutls_transport_get_ptr(gs))->verify();
+            from_transport_ptr(gnutls_transport_get_ptr(gs))->verify(false);
             return 0;
         } catch (...) {
             return GNUTLS_E_CERTIFICATE_ERROR;
@@ -1183,12 +1188,12 @@ public:
         return from_transport_ptr(ptr)->pull(dst, len);
     }
 
-    void verify() {
+    std::optional<session_dn> verify(bool fetch_dn) {
         unsigned int status;
         auto res = gnutls_certificate_verify_peers3(*this, _type != type::CLIENT || _hostname.empty()
                         ? nullptr : _hostname.c_str(), &status);
         if (res == GNUTLS_E_NO_CERTIFICATE_FOUND && _type != type::CLIENT && _creds->get_client_auth() != client_auth::REQUIRE) {
-            return;
+            return std::nullopt;
         }
         if (res < 0) {
             throw std::system_error(res, glts_errorc);
@@ -1198,7 +1203,7 @@ public:
                     cert_status_to_string(gnutls_certificate_type_get(*this),
                             status));
         }
-        if (_creds->_dn_callback) {
+        if (fetch_dn || _creds->_dn_callback) {
             // if the user registered a DN (Distinguished Name) callback
             // then extract subject and issuer from the (leaf) peer certificate and invoke the callback
 
@@ -1232,8 +1237,14 @@ public:
                 break;
             }
 
-            _creds->_dn_callback(t, std::move(subject), std::move(issuer));
+            if (_creds->_dn_callback) {
+                _creds->_dn_callback(t, subject, issuer);
+            }
+            if (fetch_dn) {
+                return session_dn{.subject=std::move(subject), .issuer=std::move(issuer)};
+            }
         }
+        return std::nullopt;
     }
 
     future<temporary_buffer<char>> get() {
@@ -1244,7 +1255,7 @@ public:
             return make_ready_future<temporary_buffer<char>>();
         }
         if (!_connected) {
-            return handshake().then(std::bind(&session::get, this));
+            return handshake().discard_result().then(std::bind(&session::get, this));
         }
         return with_semaphore(_in_sem, 1, std::bind(&session::do_get, this)).then([this](temporary_buffer<char> buf) {
             if (buf.empty() && !eof()) {
@@ -1254,7 +1265,7 @@ public:
                 // other side requests re-handshake. Now, someone else could have already dealt with it by the
                 // time we are here (continuation reordering). In fact, someone could have dealt with
                 // it and set the eof flag also, but in that case we're still eof...
-                return handshake().then(std::bind(&session::get, this));
+                return handshake().discard_result().then(std::bind(&session::get, this));
             }
             return make_ready_future<temporary_buffer<char>>(std::move(buf));
         });
@@ -1336,7 +1347,7 @@ public:
             return make_exception_future<>(std::system_error(ENOTCONN, std::system_category()));
         }
         if (!_connected) {
-            return handshake().then([this, p = std::move(p)]() mutable {
+            return handshake().discard_result().then([this, p = std::move(p)]() mutable {
                return put(std::move(p));
             });
         }
@@ -1437,7 +1448,7 @@ public:
                 if (eof()) {
                     return make_ready_future<stop_iteration>(stop_iteration::yes);
                 }
-                return do_get().then([](auto buf) {
+                return do_get().then([](auto) {
                    return make_ready_future<stop_iteration>(stop_iteration::no);
                 });
             });
@@ -1633,9 +1644,7 @@ public:
         // an actual connection. Then we create a "server" session
         // and wrap it up after handshaking.
         return _sock.accept().then([this](accept_result ar) {
-            return wrap_server(_creds, std::move(ar.connection)).then([addr = std::move(ar.remote_address)](connected_socket s) {
-                return make_ready_future<accept_result>(accept_result{std::move(s), addr});
-            });
+            return wrap_server_and_handshake(_creds, std::move(ar.connection), ar.remote_address);
         });
     }
     void abort_accept() override  {
@@ -1645,6 +1654,21 @@ public:
         return _sock.local_address();
     }
 private:
+
+    future<accept_result> wrap_server_and_handshake(shared_ptr<server_credentials> cred, connected_socket&& s, socket_address addr) {
+        auto ssn = make_lw_shared<session>(session::type::SERVER, std::move(cred), std::move(s));
+        return ssn->handshake(true).then([ssn = std::move(ssn), addr] (std::optional<session_dn> dn) {
+            session::session_ref ref(ssn);
+            connected_socket sock(std::make_unique<tls_connected_socket_impl>(std::move(ref)));
+            accept_result ar {
+                .connection = std::move(sock),
+                .remote_address = addr,
+                .dn = std::move(dn),
+            };
+            return make_ready_future<accept_result>(std::move(ar));
+        });
+    }
+
     shared_ptr<server_credentials> _creds;
     server_socket _sock;
 };

@@ -270,10 +270,17 @@ public:
 /// \addtogroup networking-module
 /// @{
 
+/// Distinguished name
+struct session_dn {
+    sstring subject;
+    sstring issuer;
+};
+
 /// The result of an server_socket::accept() call
 struct accept_result {
     connected_socket connection;  ///< The newly-accepted connection
     socket_address remote_address;  ///< The address of the peer that connected to us
+    std::optional<session_dn> dn;  ///< Distinguished name
 };
 
 /// A listening socket, waiting to accept incoming network connections.
