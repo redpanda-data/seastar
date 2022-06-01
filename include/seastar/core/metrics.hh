@@ -360,9 +360,9 @@ public:
     virtual ~metric_groups_def() = default;
     metric_groups_def(const metric_groups_def&) = delete;
     metric_groups_def(metric_groups_def&&) = default;
-    virtual metric_groups_def& add_metric(group_name_type name, const metric_definition& md) = 0;
-    virtual metric_groups_def& add_group(group_name_type name, const std::initializer_list<metric_definition>& l) = 0;
-    virtual metric_groups_def& add_group(group_name_type name, const std::vector<metric_definition>& l) = 0;
+    virtual metric_groups_def& add_metric(group_name_type name, const metric_definition& md, int handle) = 0;
+    virtual metric_groups_def& add_group(group_name_type name, const std::initializer_list<metric_definition>& l, int handle) = 0;
+    virtual metric_groups_def& add_group(group_name_type name, const std::vector<metric_definition>& l, int handle) = 0;
 };
 
 instance_id_type shard();

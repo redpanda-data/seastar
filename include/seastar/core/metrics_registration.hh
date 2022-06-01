@@ -51,6 +51,7 @@ namespace seastar {
 namespace metrics {
 
 namespace impl {
+int default_handle();
 class metric_groups_def;
 struct metric_definition_impl;
 class metric_groups_impl;
@@ -98,7 +99,7 @@ public:
      *
      * combine the constructor with the add_group functionality.
      */
-    metric_groups(std::initializer_list<metric_group_definition> mg);
+    metric_groups(std::initializer_list<metric_group_definition> mg, int handle = impl::default_handle());
 
     /*!
      * \brief Add metrics belonging to the same group.
@@ -120,7 +121,7 @@ public:
      * has no copy constructor, so the other overload (with vector) cannot be
      * invoked on a braced-init-list.
      */
-    metric_groups& add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l);
+    metric_groups& add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l, int handle = impl::default_handle());
 
     /*!
      * \brief Add metrics belonging to the same group.
@@ -138,7 +139,7 @@ public:
      * You can chain add_group calls like:
      * _metrics.add_group("my group1", vec1).add_group("my group2", vec2);
      */
-    metric_groups& add_group(const group_name_type& name, const std::vector<metric_definition>& l);
+    metric_groups& add_group(const group_name_type& name, const std::vector<metric_definition>& l, int handle = impl::default_handle());
 
     /*!
      * \brief clear all metrics groups registrations.
@@ -165,7 +166,7 @@ public:
      *
      *
      */
-    metric_group(const group_name_type& name, std::initializer_list<metric_definition> l);
+    metric_group(const group_name_type& name, std::initializer_list<metric_definition> l, int handle = impl::default_handle());
 };
 
 

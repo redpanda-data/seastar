@@ -39,23 +39,23 @@ void metric_groups::clear() {
     _impl = impl::create_metric_groups();
 }
 
-metric_groups::metric_groups(std::initializer_list<metric_group_definition> mg) : _impl(impl::create_metric_groups()) {
+metric_groups::metric_groups(std::initializer_list<metric_group_definition> mg, int handle) : _impl(impl::create_metric_groups()) {
     for (auto&& i : mg) {
-        add_group(i.name, i.metrics);
+        add_group(i.name, i.metrics, handle);
     }
 }
-metric_groups& metric_groups::add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l) {
-    _impl->add_group(name, l);
+metric_groups& metric_groups::add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l, int handle) {
+    _impl->add_group(name, l, handle);
     return *this;
 }
-metric_groups& metric_groups::add_group(const group_name_type& name, const std::vector<metric_definition>& l) {
-    _impl->add_group(name, l);
+metric_groups& metric_groups::add_group(const group_name_type& name, const std::vector<metric_definition>& l, int handle) {
+    _impl->add_group(name, l, handle);
     return *this;
 }
 metric_group::metric_group() noexcept = default;
 metric_group::~metric_group() = default;
-metric_group::metric_group(const group_name_type& name, std::initializer_list<metric_definition> l) {
-    add_group(name, l);
+metric_group::metric_group(const group_name_type& name, std::initializer_list<metric_definition> l, int handle) {
+    add_group(name, l, handle);
 }
 
 metric_group_definition::metric_group_definition(const group_name_type& name, std::initializer_list<metric_definition> l) : name(name), metrics(l) {
@@ -104,11 +104,11 @@ boost::program_options::options_description get_options_description() {
     return opts;
 }
 
-future<> configure(const boost::program_options::variables_map & opts) {
+future<> configure(const boost::program_options::variables_map & opts, int handle) {
     impl::config c;
     c.hostname = opts["metrics-hostname"].as<std::string>();
-    return smp::invoke_on_all([c] {
-        impl::get_local_impl()->set_config(c);
+    return smp::invoke_on_all([c, handle] {
+        impl::get_local_impl(handle)->set_config(c);
     });
 }
 
@@ -185,26 +185,26 @@ metric_groups_impl::~metric_groups_impl() {
     }
 }
 
-metric_groups_impl& metric_groups_impl::add_metric(group_name_type name, const metric_definition& md)  {
+metric_groups_impl& metric_groups_impl::add_metric(group_name_type name, const metric_definition& md, int handle)  {
 
     metric_id id(name, md._impl->name, md._impl->labels);
 
-    get_local_impl()->add_registration(id, md._impl->type, md._impl->f, md._impl->d, md._impl->enabled);
+    get_local_impl(handle)->add_registration(id, md._impl->type, md._impl->f, md._impl->d, md._impl->enabled);
 
     _registration.push_back(id);
     return *this;
 }
 
-metric_groups_impl& metric_groups_impl::add_group(group_name_type name, const std::vector<metric_definition>& l) {
+metric_groups_impl& metric_groups_impl::add_group(group_name_type name, const std::vector<metric_definition>& l, int handle) {
     for (auto i = l.begin(); i != l.end(); ++i) {
-        add_metric(name, *(i->_impl.get()));
+        add_metric(name, *(i->_impl.get()), handle);
     }
     return *this;
 }
 
-metric_groups_impl& metric_groups_impl::add_group(group_name_type name, const std::initializer_list<metric_definition>& l) {
+metric_groups_impl& metric_groups_impl::add_group(group_name_type name, const std::initializer_list<metric_definition>& l, int handle) {
     for (auto i = l.begin(); i != l.end(); ++i) {
-        add_metric(name, *i);
+        add_metric(name, *i, handle);
     }
     return *this;
 }
