@@ -190,7 +190,7 @@ class registered_metric {
     metric_function _f;
     shared_ptr<impl> _impl;
 public:
-    registered_metric(metric_id id, metric_function f, bool enabled=true);
+    registered_metric(metric_id id, metric_function f, bool enabled=true, int handle=default_handle());
     virtual ~registered_metric() {}
     virtual metric_value operator()() const {
         return _f();
@@ -365,14 +365,15 @@ public:
     }
 };
 
-const value_map& get_value_map();
+const value_map& get_value_map(int handle = default_handle());
 using values_reference = shared_ptr<values_copy>;
 
-foreign_ptr<values_reference> get_values();
+foreign_ptr<values_reference> get_values(int handle = default_handle());
 
 shared_ptr<impl> get_local_impl(int handle = default_handle());
 
-void unregister_metric(const metric_id & id);
+
+void unregister_metric(const metric_id & id, int handle = default_handle());
 
 /*!
  * \brief initialize metric group

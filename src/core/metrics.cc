@@ -121,8 +121,8 @@ bool label_instance::operator!=(const label_instance& id2) const {
 label shard_label("shard");
 namespace impl {
 
-registered_metric::registered_metric(metric_id id, metric_function f, bool enabled) :
-        _f(f), _impl(get_local_impl()) {
+registered_metric::registered_metric(metric_id id, metric_function f, bool enabled, int handle) :
+        _f(f), _impl(get_local_impl(handle)) {
     _info.enabled = enabled;
     _info.id = id;
 }
@@ -262,20 +262,20 @@ void impl::remove_registration(const metric_id& id) {
     }
 }
 
-void unregister_metric(const metric_id & id) {
-    get_local_impl()->remove_registration(id);
+void unregister_metric(const metric_id & id, int handle) {
+    get_local_impl(handle)->remove_registration(id);
 }
 
-const value_map& get_value_map() {
-    return get_local_impl()->get_value_map();
+const value_map& get_value_map(int handle) {
+    return get_local_impl(handle)->get_value_map();
 }
 
-foreign_ptr<values_reference> get_values() {
+foreign_ptr<values_reference> get_values(int handle) {
     shared_ptr<values_copy> res_ref = ::seastar::make_shared<values_copy>();
     auto& res = *(res_ref.get());
     auto& mv = res.values;
-    res.metadata = get_local_impl()->metadata();
-    auto & functions = get_local_impl()->functions();
+    res.metadata = get_local_impl(handle)->metadata();
+    auto & functions = get_local_impl(handle)->functions();
     mv.reserve(functions.size());
     for (auto&& i : functions) {
         value_vector values;
