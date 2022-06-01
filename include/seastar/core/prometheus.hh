@@ -37,11 +37,13 @@ struct config {
     sstring hostname; //!< hostname is deprecated, use label instead
     std::optional<metrics::label_instance> label; //!< A label that will be added to all metrics, we advice not to use it and set it on the prometheus server
     sstring prefix = "seastar"; //!< a prefix that will be added to metric names
+    int handle = metrics::default_handle(); //!< Handle that specifies which metric implementation to query
+    sstring route = "/metrics"; //!< Name of the route on which to expose the metrics
 };
 
 future<> start(httpd::http_server_control& http_server, config ctx);
 
-/// \defgroup add_prometheus_routes adds a /metrics endpoint that returns prometheus metrics
+/// \defgroup add_prometheus_routes adds a specified endpoint (defaults to /metrics) that returns prometheus metrics
 ///    in txt format
 /// @{
 future<> add_prometheus_routes(distributed<http_server>& server, config ctx);
