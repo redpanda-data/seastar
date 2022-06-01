@@ -219,11 +219,11 @@ public:
     /** @} */
 };
 
-static future<> get_map_value(metrics_families_per_shard& vec) {
+static future<> get_map_value(metrics_families_per_shard& vec, int handle) {
     vec.resize(smp::count);
-    return parallel_for_each(boost::irange(0u, smp::count), [&vec] (auto cpu) {
-        return smp::submit_to(cpu, [] {
-            return mi::get_values();
+    return parallel_for_each(boost::irange(0u, smp::count), [handle, &vec] (auto cpu) {
+        return smp::submit_to(cpu, [handle] {
+            return mi::get_values(handle);
         }).then([&vec, cpu] (auto res) {
             vec[cpu] = std::move(res);
         });
@@ -580,7 +580,7 @@ public:
         rep->write_body("txt", [this, metric_family_name, prefix] (output_stream<char>&& s) {
             return do_with(metrics_families_per_shard(), output_stream<char>(std::move(s)),
                     [this, prefix, &metric_family_name] (metrics_families_per_shard& families, output_stream<char>& s) mutable {
-                return get_map_value(families).then([&s, &families, this, prefix, &metric_family_name]() mutable {
+                return get_map_value(families, _ctx.handle).then([&s, &families, this, prefix, &metric_family_name]() mutable {
                     return do_with(get_range(families, metric_family_name, prefix),
                             [&s, this](metric_family_range& m) {
                         return write_text_representation(s, _ctx, m);
@@ -596,14 +596,14 @@ public:
 
 
 
-future<> add_prometheus_routes(http_server& server, config ctx) {
-    server._routes.put(GET, "/metrics", new metrics_handler(ctx));
+future<> add_prometheus_routes(http_server& server, config ctx, sstring route) {
+    server._routes.put(GET, route, new metrics_handler(ctx));
     return make_ready_future<>();
 }
 
-future<> add_prometheus_routes(distributed<http_server>& server, config ctx) {
-    return server.invoke_on_all([ctx](http_server& s) {
-        return add_prometheus_routes(s, ctx);
+future<> add_prometheus_routes(distributed<http_server>& server, config ctx, sstring route) {
+    return server.invoke_on_all([ctx, route](http_server& s) {
+        return add_prometheus_routes(s, ctx, route);
     });
 }
 
