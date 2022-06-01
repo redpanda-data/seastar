@@ -348,7 +348,7 @@ private:
 
 extern const plugin_instance_id per_cpu_plugin_instance;
 
-void configure(const boost::program_options::variables_map&);
+void configure(const boost::program_options::variables_map&, int handle = seastar::metrics::impl::default_handle());
 boost::program_options::options_description get_options_description();
 void remove_polled_metric(const type_instance_id &);
 
@@ -368,8 +368,8 @@ class plugin_instance_metrics;
  */
 struct registration {
     registration() = default;
-    registration(const type_instance_id& id);
-    registration(type_instance_id&& id);
+    registration(const type_instance_id& id, int handle = seastar::metrics::impl::default_handle());
+    registration(type_instance_id&& id, int handle = seastar::metrics::impl::default_handle());
     registration(const registration&) = delete;
     registration(registration&&) = default;
     ~registration();
@@ -782,8 +782,8 @@ seastar::metrics::impl::metric_id to_metrics_id(const type_instance_id & id);
  */
 template<typename Arg>
 [[deprecated("Use the metrics layer")]] static type_instance_id add_polled_metric(const type_instance_id & id, description d,
-        Arg&& arg, bool enabled = true) {
-    seastar::metrics::impl::get_local_impl()->add_registration(to_metrics_id(id), arg.type, seastar::metrics::impl::make_function(arg.value, arg.type), d, enabled);
+        Arg&& arg, bool enabled = true, int handle = seastar::metrics::impl::default_handle()) {
+    seastar::metrics::impl::get_local_impl(handle)->add_registration(to_metrics_id(id), arg.type, seastar::metrics::impl::make_function(arg.value, arg.type), d, enabled);
     return id;
 }
 /*!
