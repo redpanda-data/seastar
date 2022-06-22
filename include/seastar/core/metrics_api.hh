@@ -172,9 +172,10 @@ struct metric_info {
 using metrics_registration = std::vector<metric_id>;
 
 class metric_groups_impl : public metric_groups_def {
+    int _handle;
     metrics_registration _registration;
 public:
-    metric_groups_impl() = default;
+    explicit metric_groups_impl(int handle = default_handle());
     ~metric_groups_impl();
     metric_groups_impl(const metric_groups_impl&) = delete;
     metric_groups_impl(metric_groups_impl&&) = default;
@@ -192,7 +193,7 @@ class registered_metric {
     metric_function _f;
     shared_ptr<impl> _impl;
 public:
-    registered_metric(metric_id id, metric_function f, bool enabled=true, bool skip_when_empty=false);
+    registered_metric(metric_id id, metric_function f, bool enabled=true, bool skip_when_empty=false, int handle=default_handle());
     virtual ~registered_metric() {}
     virtual metric_value operator()() const {
         return _f();
@@ -339,7 +340,7 @@ public:
         return _value_map;
     }
 
-    void add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, bool skip_when_empty, const std::vector<std::string>& aggregate_labels);
+    void add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, bool skip_when_empty, const std::vector<std::string>& aggregate_labels, int handle = default_handle());
     void remove_registration(const metric_id& id);
     future<> stop() {
         return make_ready_future<>();
@@ -362,14 +363,15 @@ public:
     }
 };
 
-const value_map& get_value_map();
+const value_map& get_value_map(int handle = default_handle());
 using values_reference = shared_ptr<values_copy>;
 
-foreign_ptr<values_reference> get_values();
+foreign_ptr<values_reference> get_values(int handle = default_handle());
 
 shared_ptr<impl> get_local_impl(int handle = default_handle());
 
-void unregister_metric(const metric_id & id);
+
+void unregister_metric(const metric_id & id, int handle = default_handle());
 
 /*!
  * \brief initialize metric group
@@ -377,7 +379,7 @@ void unregister_metric(const metric_id & id);
  * Create a metric_group_def.
  * No need to use it directly.
  */
-std::unique_ptr<metric_groups_def> create_metric_groups();
+std::unique_ptr<metric_groups_def> create_metric_groups(int handle = default_handle());
 
 }
 
@@ -394,7 +396,7 @@ struct options : public program_options::option_group {
 /*!
  * \brief set the metrics configuration
  */
-future<> configure(const options& opts);
+future<> configure(const options& opts, int handle = default_handle());
 
 }
 }

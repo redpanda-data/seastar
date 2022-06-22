@@ -51,6 +51,7 @@ namespace seastar {
 namespace metrics {
 
 namespace impl {
+int default_handle();
 class metric_groups_def;
 struct metric_definition_impl;
 class metric_groups_impl;
