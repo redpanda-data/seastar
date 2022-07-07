@@ -209,6 +209,11 @@ public:
     void set_skip_when_empty(bool skip) {
         _info.skip_when_empty = skip;
     }
+
+    bool get_skip_when_empty() const {
+        return _info.skip_when_empty;
+    }
+
     const metric_id& get_id() const {
         return _info.id;
     }
