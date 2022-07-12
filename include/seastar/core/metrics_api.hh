@@ -436,5 +436,12 @@ struct options : public program_options::option_group {
  */
 future<> configure(const options& opts, int handle = default_handle());
 
+
+/*!
+ * \brief replicate metric families accross internal metrics implementations
+ */
+future<>
+replicate_metric_families(int source_handle, std::unordered_multimap<seastar::sstring, int> metric_families_to_replicate);
+
 }
 }
