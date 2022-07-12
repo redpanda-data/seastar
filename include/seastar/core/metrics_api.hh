@@ -336,6 +336,7 @@ class impl {
     bool _dirty = true;
     shared_ptr<metric_metadata> _metadata;
     std::vector<std::vector<metric_function>> _current_metrics;
+    std::unordered_multimap<seastar::sstring, int> _metric_families_to_replicate;
 public:
     value_map& get_value_map() {
         return _value_map;
@@ -366,6 +367,16 @@ public:
     void dirty() {
         _dirty = true;
     }
+
+private:
+    void replicate_metric_family(const seastar::sstring& name,
+                                 int destination_handle) const;
+    void replicate_metric_if_required(const shared_ptr<registered_metric>& metric) const;
+    void replicate_metric(const shared_ptr<registered_metric>& metric,
+                          const metric_family& family,
+                          const shared_ptr<impl>& destination,
+                          int destination_handle) const;
+
 };
 
 const value_map& get_value_map(int handle = default_handle());
