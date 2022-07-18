@@ -40,7 +40,8 @@ metric_groups::metric_groups(int handle) noexcept : _impl(impl::create_metric_gr
 }
 
 void metric_groups::clear() {
-    _impl = impl::create_metric_groups();
+    const auto current_handle = _impl->get_handle();
+    _impl = impl::create_metric_groups(current_handle);
 }
 
 metric_groups::metric_groups(std::initializer_list<metric_group_definition> mg, int handle) : _impl(impl::create_metric_groups(handle)) {
