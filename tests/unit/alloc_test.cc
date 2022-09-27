@@ -19,6 +19,7 @@
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
 
+#include <boost/test/tools/old/interface.hpp>
 #include <seastar/testing/test_case.hh>
 #include <seastar/core/memory.hh>
 #include <seastar/core/smp.hh>
@@ -212,11 +213,7 @@ SEASTAR_TEST_CASE(test_bad_alloc_throws) {
 
     // test that new throws
     stats = seastar::memory::stats();
-    try {
-        sink = operator new(size);
-        BOOST_TEST_FAIL("operator new did not throw");
-    } catch (std::bad_alloc&) {
-    }
+    BOOST_REQUIRE_THROW(sink = operator new(size), std::bad_alloc);
     BOOST_CHECK_EQUAL(failed_allocs(), 1);
 
     // test that huge malloc returns null

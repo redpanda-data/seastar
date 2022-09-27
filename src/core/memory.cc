@@ -2271,7 +2271,7 @@ void configure(std::vector<resource::memory> m, bool mbind, std::optional<std::s
 }
 
 statistics stats() {
-    return statistics{0, 0, 0, 1 << 30, 1 << 30, 0, 0, 0, 0, 0};
+    return statistics{0, 0, 0, 1 << 30, 1 << 30, 0, 0, 0, 0, 0, 0};
 }
 
 size_t free_memory() {
