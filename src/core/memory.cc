@@ -220,7 +220,8 @@ static thread_local bool is_reactor_thread = false;
 
 namespace alloc_stats {
 
-enum class types { allocs, frees, cross_cpu_frees, reclaims, large_allocs, foreign_mallocs, foreign_frees, foreign_cross_frees, enum_size };
+enum class types { allocs, frees, cross_cpu_frees, reclaims, large_allocs, failed_allocs,
+    foreign_mallocs, foreign_frees, foreign_cross_frees, enum_size };
 
 using stats_array = std::array<uint64_t, static_cast<std::size_t>(types::enum_size)>;
 using stats_atomic_array = std::array<std::atomic_uint64_t, static_cast<std::size_t>(types::enum_size)>;
@@ -1561,7 +1562,8 @@ void configure(std::vector<resource::memory> m, bool mbind,
 statistics stats() {
     return statistics{alloc_stats::get(alloc_stats::types::allocs), alloc_stats::get(alloc_stats::types::frees), alloc_stats::get(alloc_stats::types::cross_cpu_frees),
         cpu_mem.nr_pages * page_size, cpu_mem.nr_free_pages * page_size, alloc_stats::get(alloc_stats::types::reclaims), alloc_stats::get(alloc_stats::types::large_allocs),
-        alloc_stats::get(alloc_stats::types::foreign_mallocs), alloc_stats::get(alloc_stats::types::foreign_frees), alloc_stats::get(alloc_stats::types::foreign_cross_frees)};
+        alloc_stats::get(alloc_stats::types::failed_allocs), alloc_stats::get(alloc_stats::types::foreign_mallocs), alloc_stats::get(alloc_stats::types::foreign_frees),
+        alloc_stats::get(alloc_stats::types::foreign_cross_frees)};
 }
 
 size_t free_memory() {
@@ -1803,6 +1805,8 @@ void on_allocation_failure(size_t size) {
         seastar_logger.error("Failed to allocate {} bytes", size);
         abort();
     }
+
+    alloc_stats::increment(alloc_stats::types::failed_allocs);
 }
 
 sstring generate_memory_diagnostics_report() {
