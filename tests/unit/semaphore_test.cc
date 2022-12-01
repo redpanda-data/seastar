@@ -239,17 +239,19 @@ SEASTAR_TEST_CASE(test_with_semaphore) {
 }
 
 SEASTAR_THREAD_TEST_CASE(test_semaphore_units_splitting) {
-    auto sm = semaphore(2);
-    auto units = get_units(sm, 2, 1min).get0();
+    auto sm = semaphore(3);
+    auto units = get_units(sm, 3, 1min).get0();
     {
-        BOOST_REQUIRE_EQUAL(units.count(), 2);
+        BOOST_REQUIRE_EQUAL(units.count(), 3);
         BOOST_REQUIRE_EQUAL(sm.available_units(), 0);
         auto split = units.split(1);
         BOOST_REQUIRE_EQUAL(sm.available_units(), 0);
+        BOOST_REQUIRE_EQUAL(units.count(), 2);
+        BOOST_REQUIRE_EQUAL(split.count(), 1);
     }
     BOOST_REQUIRE_EQUAL(sm.available_units(), 1);
     units.~semaphore_units();
-    units = get_units(sm, 2, 1min).get0();
+    units = get_units(sm, 3, 1min).get0();
     BOOST_REQUIRE_EQUAL(sm.available_units(), 0);
     BOOST_REQUIRE_THROW(units.split(10), std::invalid_argument);
     BOOST_REQUIRE_EQUAL(sm.available_units(), 0);
@@ -328,4 +330,15 @@ SEASTAR_THREAD_TEST_CASE(test_named_semaphore_timeout) {
     } catch (...) {
         BOOST_FAIL("Expected an instance of named_semaphore_timed_out with proper semaphore name");
     }
+}
+
+SEASTAR_THREAD_TEST_CASE(test_semaphore_move_with_outstanding_units) {
+    auto sem0 = semaphore(1);
+    auto sem = std::make_unique<semaphore>(std::move(sem0));
+    auto units = std::make_unique<semaphore_units<>>(get_units(*sem, 1).get());
+    BOOST_REQUIRE_EQUAL(sem->current(), 0);
+    auto sem1 = std::move(sem);
+    BOOST_REQUIRE_EQUAL(sem1->current(), 0);
+    units.reset();
+    BOOST_REQUIRE_EQUAL(sem1->current(), 1);
 }
