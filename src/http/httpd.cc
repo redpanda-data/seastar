@@ -429,9 +429,9 @@ future<bool> connection::generate_reply(std::unique_ptr<request> req) {
     bool conn_close = false;
     auto it = req->_headers.find("Connection");
     if (it != req->_headers.end()) {
-        if (request::case_insensitive_cmp()(it->second, "keep-alive")) {
+        if (it->second == "Keep-Alive") {
             conn_keep_alive = true;
-        } else if (request::case_insensitive_cmp()(it->second, "close")) {
+        } else if (it->second == "Close") {
             conn_close = true;
         }
     }
