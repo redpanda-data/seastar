@@ -144,21 +144,6 @@ struct request {
         return listener_idx;
     }
 
-    bool should_keep_alive() const {
-        if (_version == "0.9") {
-            return false;
-        }
-
-        // TODO: handle HTTP/2.0 when it releases
-
-        auto it = _headers.find("Connection");
-        if (_version == "1.0") {
-            return it != _headers.end()
-                 && case_insensitive_cmp()(it->second, "keep-alive");
-        } else { // HTTP/1.1
-            return it == _headers.end() || !case_insensitive_cmp()(it->second, "close");
-        }
-    }
 };
 
 } // namespace httpd
