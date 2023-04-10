@@ -28,7 +28,7 @@
 
 #include <unordered_map>
 #include <exception>
-#include <iosfwd>
+#include <iostream>
 #include <atomic>
 #include <mutex>
 #include <boost/lexical_cast.hpp>
