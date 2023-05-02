@@ -135,6 +135,7 @@ public:
     }
 
     virtual future<> flush(void) = 0;
+    virtual future<> syncfs(void) = 0;
     virtual future<struct stat> stat(void) = 0;
     virtual future<> truncate(uint64_t length) = 0;
     virtual future<> discard(uint64_t offset, uint64_t length) = 0;
@@ -373,6 +374,10 @@ public:
     /// Prior to a flush, written data may or may not survive a power failure.  After
     /// a flush, data is guaranteed to be on disk.
     future<> flush() noexcept;
+
+    /// Causes any dirty data on any file on the same filesystem as this file to
+    /// be flushed to disk.
+    future<> syncfs() noexcept;
 
     /// Returns \c stat information about the file.
     future<struct stat> stat() noexcept;

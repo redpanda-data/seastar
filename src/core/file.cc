@@ -185,6 +185,11 @@ posix_file_impl::flush(void) noexcept {
     return engine().fdatasync(_fd);
 }
 
+future<>
+posix_file_impl::syncfs(void) noexcept {
+    return engine().syncfs(_fd);
+}
+
 future<struct stat>
 posix_file_impl::stat() noexcept {
     return engine().fstat(_fd);
@@ -1215,6 +1220,14 @@ future<struct stat> file::stat() noexcept {
 future<> file::flush() noexcept {
   try {
     return _file_impl->flush();
+  } catch (...) {
+    return current_exception_as_future();
+  }
+}
+
+future<> file::syncfs() noexcept {
+  try {
+    return _file_impl->syncfs();
   } catch (...) {
     return current_exception_as_future();
   }
