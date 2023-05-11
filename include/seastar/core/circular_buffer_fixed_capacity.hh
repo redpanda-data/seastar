@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <iterator>
 #include <utility>
+#include <algorithm>
 
 
 /// \file
