@@ -62,6 +62,7 @@
 #include <seastar/core/scheduling_specific.hh>
 #include <seastar/core/smp_options.hh>
 #include <seastar/util/log.hh>
+#include <seastar/util/noncopyable_function.hh>
 #include <seastar/util/read_first_line.hh>
 #include "core/reactor_backend.hh"
 #include "core/syscall_result.hh"
@@ -3298,7 +3299,7 @@ int reactor::do_run() {
     auto check_for_work = [this] () {
         return poll_once() || have_more_tasks();
     };
-    std::function<bool()> pure_check_for_work = [this] () {
+    const noncopyable_function<bool()> pure_check_for_work = [this] () {
         return pure_poll_once() || have_more_tasks();
     };
     _cpu_profiler->start();
