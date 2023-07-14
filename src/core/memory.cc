@@ -584,7 +584,8 @@ struct cpu_pages {
     void warn_large_allocation(size_t size);
     allocation_site_ptr add_alloc_site(size_t allocated_size);
     void remove_alloc_site(allocation_site_ptr alloc_site, size_t deallocated_size);
-    bool should_sample(size_t size);
+    bool maybe_sample(size_t size);
+    bool definitely_sample(size_t size);
     memory::memory_layout memory_layout();
     ~cpu_pages();
 };
@@ -846,9 +847,24 @@ cpu_pages::remove_alloc_site(allocation_site_ptr alloc_site, size_t deallocated_
     }
 }
 
-bool
-cpu_pages::should_sample(size_t size) {
-    return heap_prof_sampler.should_sample(size);
+[[gnu::always_inline]]
+inline bool
+cpu_pages::maybe_sample(size_t size) {
+#ifdef SEASTAR_HEAPPROF
+    return heap_prof_sampler.maybe_sample(size);
+#else
+    return false;
+#endif
+}
+
+[[gnu::always_inline]]
+inline bool
+cpu_pages::definitely_sample(size_t size) {
+#ifdef SEASTAR_HEAPPROF
+    return heap_prof_sampler.definitely_sample(size);
+#else
+    return false;
+#endif
 }
 
 [[gnu::always_inline]]
@@ -1520,7 +1536,7 @@ static inline void* finish_allocation(void* ptr, size_t size) {
     return ptr;
 }
 
-void *allocate_slowpath(size_t size, bool should_sample) {
+void *allocate_slowpath(size_t size) {
     if (!is_reactor_thread) {
         if (original_malloc_func) {
             alloc_stats::increment(alloc_stats::types::foreign_mallocs);
@@ -1533,6 +1549,9 @@ void *allocate_slowpath(size_t size, bool should_sample) {
     if (size <= sizeof(free_object)) {
         size = sizeof(free_object);
     }
+    // On the fast path we've already called maybe_sample, except in the case
+    // of !is_reactor_thread (we don't sample such alloctions).
+    bool should_sample = get_cpu_mem().definitely_sample(size);
     void* ptr;
     if (size <= max_small_allocation) {
 #ifdef SEASTAR_HEAPPROF
@@ -1551,18 +1570,13 @@ void *allocate_slowpath(size_t size, bool should_sample) {
 
 [[gnu::always_inline]]
 inline void* allocate(size_t size) {
-#ifdef SEASTAR_HEAPPROF
-    bool should_sample = is_reactor_thread ? get_cpu_mem().should_sample(size) : false;
-#else
-    bool should_sample = false;
-#endif // SEASTAR_HEAPPROF
-    if (__builtin_expect(!should_sample && is_reactor_thread && size <= max_small_allocation, true)) {
+    if (__builtin_expect(is_reactor_thread && !get_cpu_mem().maybe_sample(size) && size <= max_small_allocation, true)) {
         size = std::max(size, sizeof(free_object));
         auto ptr = allocate_from_small_pool<alignment_t::unaligned>(size);
         return finish_allocation(ptr, size);
     }
 
-    return allocate_slowpath(size, should_sample);
+    return allocate_slowpath(size);
 }
 
 void* allocate_aligned(size_t align, size_t size) {
@@ -1579,7 +1593,8 @@ void* allocate_aligned(size_t align, size_t size) {
         size = std::max(sizeof(free_object), align);
     }
 #ifdef SEASTAR_HEAPPROF
-    bool should_sample = get_cpu_mem().should_sample(size);
+    auto& mem = get_cpu_mem();
+    bool should_sample = mem.maybe_sample(size) && mem.definitely_sample(size);
 #else
     bool should_sample = false;
 #endif
