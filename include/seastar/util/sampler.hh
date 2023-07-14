@@ -59,8 +59,8 @@ public:
     }
     /// Updates the sampling state (byte remaining until next sample) and returns
     /// true if this allocation of size `alloc_size` may be sampled.
-    /// Specifically, if it returns false, this allocation is definition not 
-    /// samples. However if it returns true, it is not yet determiined whether
+    /// Specifically, if it returns false, this allocation is definitely not 
+    /// sampled. However if it returns true, it is not yet determined whether
     /// a sample should be taken. Instead, definitely_sample should be called and
     /// if it returns true, a sample is called for.
     [[gnu::always_inline]]
@@ -152,8 +152,6 @@ private:
         int64_t next = static_cast<int64_t>(dist(random_gen));
         // We approximate the geometric distribution using an exponential
         // distribution.
-        // We need to add 1 because that gives us the number of failures before
-        // the next success, while our interval includes the next success.
         return next;
     }
 
