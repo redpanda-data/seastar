@@ -29,6 +29,8 @@
 #include <boost/functional/hash.hpp>
 #endif
 
+#include <deque>
+
 /*!
  * \file metrics_api.hh
  * \brief header file for metric API layer (like prometheus or collectd)
@@ -334,7 +336,7 @@ public:
 
 using value_map = std::map<sstring, metric_family>;
 
-using metric_metadata_vector = std::vector<metric_info>;
+using metric_metadata_fifo = std::deque<metric_info>;
 
 /*!
  * \brief holds a metric family metadata
@@ -345,7 +347,7 @@ using metric_metadata_vector = std::vector<metric_info>;
  */
 struct metric_family_metadata {
     metric_family_info mf;
-    metric_metadata_vector metrics;
+    metric_metadata_fifo metrics;
 };
 
 using value_vector = std::vector<metric_value>;
@@ -367,7 +369,7 @@ class impl {
     bool _dirty = true;
     shared_ptr<metric_metadata> _metadata;
     std::set<sstring> _labels;
-    std::vector<std::vector<metric_function>> _current_metrics;
+    std::vector<std::deque<metric_function>> _current_metrics;
     std::vector<relabel_config> _relabel_configs;
     std::unordered_multimap<seastar::sstring, int> _metric_families_to_replicate;
 public:
@@ -394,7 +396,7 @@ public:
 
     shared_ptr<metric_metadata> metadata();
 
-    std::vector<std::vector<metric_function>>& functions();
+    std::vector<std::deque<metric_function>>& functions();
 
     void update_metrics_if_needed();
 
