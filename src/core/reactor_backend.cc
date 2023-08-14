@@ -840,10 +840,12 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
             _steady_clock_timer_deadline = {};
             continue;
         }
+        bool has_error = false;
         if (evt.events & (EPOLLHUP | EPOLLERR)) {
             // treat the events as required events when error occurs, let
             // send/recv/accept/connect handle the specific error.
             evt.events = pfd->events_requested;
+            has_error = true;
         }
         auto events = evt.events & (EPOLLIN | EPOLLOUT | EPOLLRDHUP);
         auto events_to_remove = events & ~pfd->events_requested;
@@ -864,6 +866,18 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
             evt.events = pfd->events_epoll;
             auto op = evt.events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
             ::epoll_ctl(_epollfd.get(), op, pfd->fd.get(), &evt);
+        }
+        else if (has_error && pfd->events_requested == 0) {
+            // In case we got an error and we are not interested in any events
+            // anymore, remove the fd from the epoll set. Otherwise due to the
+            // above logic of setting evt.events to pfd->events_requested (0)
+            // and subsequent calculation of events_to_remove, we would never
+            // remove the fd from the epoll set. Due to running in level
+            // triggered mode this would then cause repeated wake ups and
+            // spinning until the fd is closed and thereby removed from the
+            // epoll set.
+            pfd->events_epoll = 0;
+            ::epoll_ctl(_epollfd.get(), EPOLL_CTL_DEL, pfd->fd.get(), nullptr);
         }
     }
     return nr;
