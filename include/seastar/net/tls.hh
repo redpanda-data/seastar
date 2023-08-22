@@ -330,9 +330,14 @@ namespace tls {
     ::seastar::socket socket(shared_ptr<certificate_credentials>, sstring name = {});
     /// @}
 
-    /** Wraps an existing connection in SSL/TLS. */
+    /** 
+     * Wraps an existing connection in SSL/TLS.
+     *
+     * \param wait_for_eof Optionally indicate to the client if it should wait for an EOF from the server
+     * after sending the BYE message. By default, the wait is hardcoded to 10 seconds.
+     */
     /// @{
-    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, sstring name = {});
+    future<connected_socket> wrap_client(shared_ptr<certificate_credentials>, connected_socket&&, sstring name = {}, bool wait_for_eof = true);
     future<connected_socket> wrap_server(shared_ptr<server_credentials>, connected_socket&&);
     /// @}
 
