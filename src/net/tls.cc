@@ -982,10 +982,10 @@ public:
     };
 
     session(type t, shared_ptr<tls::certificate_credentials> creds,
-            std::unique_ptr<net::connected_socket_impl> sock, sstring name = { })
+            std::unique_ptr<net::connected_socket_impl> sock, sstring name = { }, std::optional<tls_options> options = std::nullopt)
             : _type(t), _sock(std::move(sock)), _creds(creds->_impl), _hostname(
                     std::move(name)), _in(_sock->source()), _out(_sock->sink()),
-                    _in_sem(1), _out_sem(1), _output_pending(
+                    _in_sem(1), _out_sem(1), _options(options.value_or(tls_options{})), _output_pending(
                     make_ready_future<>()), _session([t] {
                 gnutls_session_t session;
                 gtls_chk(gnutls_init(&session, GNUTLS_NONBLOCK|uint32_t(t)));
@@ -1028,9 +1028,10 @@ public:
 #endif
     }
     session(type t, shared_ptr<certificate_credentials> creds,
-            connected_socket sock, sstring name = { })
+            connected_socket sock, sstring name = { },
+            std::optional<tls_options> options = std::nullopt)
             : session(t, std::move(creds), net::get_impl::get(std::move(sock)),
-                    std::move(name)) {
+                    std::move(name), options) {
     }
 
     ~session() {
@@ -1447,6 +1448,10 @@ public:
         return wait_for_output();
     }
     future<> wait_for_eof() {
+        if (!_options.wait_for_eof_on_shutdown) {
+            return make_ready_future();
+        }
+
         // read records until we get an eof alert
         // since this call could time out, we must not ac
         return with_semaphore(_in_sem, 1, [this] {
@@ -1564,6 +1569,8 @@ private:
     data_sink _out;
 
     semaphore _in_sem, _out_sem;
+
+    tls_options _options;
 
     bool _eof = false;
     bool _shutdown = false;
@@ -1766,8 +1773,8 @@ socket tls::socket(shared_ptr<certificate_credentials> cred, sstring name) {
     return ::seastar::socket(std::make_unique<tls_socket_impl>(std::move(cred), std::move(name)));
 }
 
-future<connected_socket> tls::wrap_client(shared_ptr<certificate_credentials> cred, connected_socket&& s, sstring name) {
-    session::session_ref sess(make_lw_shared<session>(session::type::CLIENT, std::move(cred), std::move(s), std::move(name)));
+future<connected_socket> tls::wrap_client(shared_ptr<certificate_credentials> cred, connected_socket&& s, sstring name, std::optional<tls_options> options) {
+    session::session_ref sess(make_lw_shared<session>(session::type::CLIENT, std::move(cred), std::move(s), std::move(name), options));
     connected_socket sock(std::make_unique<tls_connected_socket_impl>(std::move(sess)));
     return make_ready_future<connected_socket>(std::move(sock));
 }
