@@ -1067,6 +1067,26 @@ void tls::credentials_builder::rebuild(server_credentials& creds) const {
     creds._impl = std::move(tmp->_impl);
 }
 
+future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build_reloadable_certificate_credentials(reload_callback_with_creds cb, std::optional<std::chrono::milliseconds> tolerance) const {
+    auto creds = seastar::make_shared<reloadable_credentials<tls::certificate_credentials>>(*this,[cb{std::move(cb)}](const credentials_builder& builder, const std::unordered_set<sstring>& files, std::exception_ptr ep) {
+         cb(files, *builder.build_certificate_credentials(), ep);
+         return make_ready_future();
+    }, std::move(*build_certificate_credentials()), tolerance.value_or(reloadable_credentials_base::default_tolerance));
+    return creds->init().then([creds] {
+        return make_ready_future<shared_ptr<tls::certificate_credentials>>(creds);
+    });
+}
+
+future<shared_ptr<tls::server_credentials>> tls::credentials_builder::build_reloadable_server_credentials(reload_callback_with_creds cb, std::optional<std::chrono::milliseconds> tolerance) const {
+    auto creds = seastar::make_shared<reloadable_credentials<tls::server_credentials>>(*this, [cb{std::move(cb)}](const credentials_builder& builder, const std::unordered_set<sstring>& files, std::exception_ptr ep) {
+         cb(files, *builder.build_server_credentials(), ep);
+         return make_ready_future();
+    }, std::move(*build_server_credentials()), tolerance.value_or(reloadable_credentials_base::default_tolerance));
+    return creds->init().then([creds] {
+        return make_ready_future<shared_ptr<tls::server_credentials>>(creds);
+    });
+}
+
 future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build_reloadable_certificate_credentials(reload_callback_ex cb, std::optional<std::chrono::milliseconds> tolerance) const {
     auto creds = seastar::make_shared<reloadable_credentials<tls::certificate_credentials>>(*this, std::move(cb), std::move(*build_certificate_credentials()), tolerance.value_or(reloadable_credentials_base::default_tolerance));
     return creds->init().then([creds] {
