@@ -48,18 +48,23 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
     auto wbuf = temporary_buffer<char>::aligned(aligned_size, blocks * aligned_size);
     std::fill(wbuf.get_write(), wbuf.get_write() + aligned_size, 'a');
 
-    auto data_file = co_await open_file_dma(file1, open_flags::rw | open_flags::create);
+    std::vector<file> files;
+
+    for (size_t i = 0; i < blocks; ++i) {
+        files.push_back(co_await open_file_dma(file1 + std::to_string(i), open_flags::rw | open_flags::create));
+    }
+
     file slow_file;
     if (!file2.empty()) {
         slow_file = co_await open_file_dma(file2, open_flags::rw | open_flags::create);
     }
 
-    std::vector<future<size_t>> futs;
+    std::vector<future<>> futs;
     futs.reserve(blocks);
 
     future<size_t> slow_fut = make_ready_future<size_t>(0);
 
-    for (int i = 0; i < seconds; ++i) {
+    for (size_t i = 0; i < seconds; ++i) {
         size_t count = 0;
         auto start = std::chrono::steady_clock::now();
         auto end = start + std::chrono::seconds(1);
@@ -70,10 +75,10 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
             }
 
             for (size_t i = 0; i < blocks; ++i) {
-                futs.push_back(data_file.dma_write(i * aligned_size, wbuf.get(), aligned_size));
+                futs.push_back(files[0].dma_write(i * aligned_size, wbuf.get(), aligned_size)
+                    .then([&files, i] (size_t) { return files[i].flush(); }));
             }
             co_await when_all_succeed(futs.begin(), futs.end());
-            co_await data_file.flush();
             futs.clear();
 
             start = std::chrono::steady_clock::now();
