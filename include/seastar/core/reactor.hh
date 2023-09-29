@@ -299,7 +299,9 @@ private:
     semaphore _cpu_started;
     internal::preemption_monitor _preemption_monitor{};
     uint64_t _global_tasks_processed = 0;
+    public:
     uint64_t _polls = 0;
+    private:
     metrics::internal::time_estimated_histogram _stalls_histogram;
     std::unique_ptr<internal::cpu_stall_detector> _cpu_stall_detector;
     std::unique_ptr<internal::cpu_profiler> _cpu_profiler;

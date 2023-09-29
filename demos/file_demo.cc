@@ -23,6 +23,7 @@
 // Demonstration of seastar::with_file
 
 #include "seastar/core/future.hh"
+#include "seastar/core/reactor.hh"
 #include "seastar/core/when_all.hh"
 #include <cstring>
 #include <limits>
@@ -42,6 +43,7 @@
 #include <seastar/util/tmp_file.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/io_priority_class.hh>
+#include <seastar/core/io_queue.hh>
 
 using namespace seastar;
 
@@ -59,6 +61,7 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
     futs.reserve(blocks);
 
     for (size_t i = 0; i < seconds; ++i) {
+        auto polls = engine()._polls;
         size_t count = 0;
         auto start = std::chrono::steady_clock::now();
         auto end = start + std::chrono::seconds(1);
@@ -75,8 +78,10 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
             count += blocks;
         }
 
-        fmt::print("{}: {} iops {} MB/s\n", file1, count, count * aligned_size / 1024 / 1024);
-
+        auto polls_per_second = engine()._polls - polls;
+        fmt::print("{}: {} iops {} MB/s {} polls\n", file1, count,
+                   count * aligned_size / 1024 / 1024,
+                   polls_per_second);
     }
 }
 
