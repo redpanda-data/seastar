@@ -43,7 +43,7 @@
 
 using namespace seastar;
 
-future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstring file1, sstring file2) {
+future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstring file1) {
     fmt::print("Demonstrating with_file():\n");
     auto wbuf = temporary_buffer<char>::aligned(aligned_size, blocks * aligned_size);
     std::fill(wbuf.get_write(), wbuf.get_write() + aligned_size, 'a');
@@ -54,10 +54,10 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
         files.push_back(co_await open_file_dma(file1 + std::to_string(i), open_flags::rw | open_flags::create));
     }
 
-    file slow_file;
-    if (!file2.empty()) {
-        slow_file = co_await open_file_dma(file2, open_flags::rw | open_flags::create);
-    }
+    // file slow_file;
+    // if (!file2.empty()) {
+    //     slow_file = co_await open_file_dma(file2, open_flags::rw | open_flags::create);
+    // }
 
     std::vector<future<>> futs;
     futs.reserve(blocks);
@@ -70,9 +70,9 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
         auto end = start + std::chrono::seconds(1);
 
         while (start < end) {
-            if (!file2.empty() && slow_fut.available()) {
-                slow_fut = slow_file.dma_write(0, wbuf.get(), aligned_size);
-            }
+            // if (!file2.empty() && slow_fut.available()) {
+            //     slow_fut = slow_file.dma_write(0, wbuf.get(), aligned_size);
+            // }
 
             for (size_t i = 0; i < blocks; ++i) {
                 futs.push_back(files[0].dma_write(i * aligned_size, wbuf.get(), aligned_size)
@@ -85,7 +85,7 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
             count += blocks;
         }
 
-        fmt::print("{} iops {} MB/s\n", count, count * aligned_size / 1024 / 1024);
+        fmt::print("{}: {} iops {} MB/s\n", file1, count, count * aligned_size / 1024 / 1024);
 
     }
 }
@@ -108,6 +108,12 @@ int main(int ac, char** av) {
         auto blocks = config["blocks"].as<size_t>();
         auto file1 = config["file1"].as<sstring>();
         auto file2 = config["file2"].as<sstring>();
-        co_return co_await demo_with_file(seconds, chunk_size, blocks, file1, file2);
+
+        auto fast_fut = demo_with_file(seconds, chunk_size, blocks, file1);
+        auto slow_fut = demo_with_file(seconds, chunk_size, blocks, file2);
+
+        co_await std::move(fast_fut);
+        co_await std::move(slow_fut);
+        co_return;
     });
 }
