@@ -300,7 +300,9 @@ private:
     internal::preemption_monitor _preemption_monitor{};
     uint64_t _global_tasks_processed = 0;
     public:
+    sched_clock::duration _total_sleep;
     uint64_t _polls = 0;
+    uint64_t _sleeps = 0;
     private:
     metrics::internal::time_estimated_histogram _stalls_histogram;
     std::unique_ptr<internal::cpu_stall_detector> _cpu_stall_detector;
@@ -370,7 +372,6 @@ private:
     circular_buffer<double> _loads;
     double _load = 0;
     sched_clock::duration _total_idle{0};
-    sched_clock::duration _total_sleep;
     sched_clock::time_point _start_time = now();
     std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
     output_stream<char>::batch_flush_list_t _flush_batching;

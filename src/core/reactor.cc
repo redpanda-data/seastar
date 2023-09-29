@@ -3447,6 +3447,7 @@ int reactor::do_run() {
                     auto start_sleep = now();
                     _cpu_stall_detector->start_sleep();
                     _cpu_profiler->stop();
+                    _sleeps++;
                     sleep();
                     _cpu_profiler->start();
                     _cpu_stall_detector->end_sleep();

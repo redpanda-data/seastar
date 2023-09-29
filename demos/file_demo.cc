@@ -25,6 +25,7 @@
 #include "seastar/core/future.hh"
 #include "seastar/core/reactor.hh"
 #include "seastar/core/when_all.hh"
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <random>
@@ -62,6 +63,8 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
 
     for (size_t i = 0; i < seconds; ++i) {
         auto polls = engine()._polls;
+        auto sleeps = engine()._sleeps;
+        auto start_total_sleep = engine()._total_sleep;
         size_t count = 0;
         auto start = std::chrono::steady_clock::now();
         auto end = start + std::chrono::seconds(1);
@@ -79,9 +82,13 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
         }
 
         auto polls_per_second = engine()._polls - polls;
-        fmt::print("{}: {} iops {} MB/s {} polls\n", file1, count,
+        auto sleeps_per_second = engine()._sleeps - sleeps;
+        auto average_sleep_time = sleeps_per_second ? (engine()._total_sleep - start_total_sleep) / sleeps_per_second : std::chrono::microseconds(0);
+        fmt::print("{}: {} iops {} MB/s {} polls {} sleeps {} average-sleep-us\n", file1, count,
                    count * aligned_size / 1024 / 1024,
-                   polls_per_second);
+                   polls_per_second,
+                   sleeps_per_second,
+                   average_sleep_time / std::chrono::microseconds(1));
     }
 }
 
