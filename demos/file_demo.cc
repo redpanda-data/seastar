@@ -22,6 +22,7 @@
 
 // Demonstration of seastar::with_file
 
+#include "seastar/core/future.hh"
 #include "seastar/core/when_all.hh"
 #include <cstring>
 #include <limits>
@@ -40,11 +41,11 @@
 #include <seastar/util/log.hh>
 #include <seastar/util/tmp_file.hh>
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/io_priority_class.hh>
 
 using namespace seastar;
 
-future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstring file1) {
-    fmt::print("Demonstrating with_file():\n");
+future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstring file1, io_priority_class& prio_class) {
     auto wbuf = temporary_buffer<char>::aligned(aligned_size, blocks * aligned_size);
     std::fill(wbuf.get_write(), wbuf.get_write() + aligned_size, 'a');
 
@@ -53,11 +54,6 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
     for (size_t i = 0; i < blocks; ++i) {
         files.push_back(co_await open_file_dma(file1 + std::to_string(i), open_flags::rw | open_flags::create));
     }
-
-    // file slow_file;
-    // if (!file2.empty()) {
-    //     slow_file = co_await open_file_dma(file2, open_flags::rw | open_flags::create);
-    // }
 
     std::vector<future<>> futs;
     futs.reserve(blocks);
@@ -70,12 +66,8 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
         auto end = start + std::chrono::seconds(1);
 
         while (start < end) {
-            // if (!file2.empty() && slow_fut.available()) {
-            //     slow_fut = slow_file.dma_write(0, wbuf.get(), aligned_size);
-            // }
-
             for (size_t i = 0; i < blocks; ++i) {
-                futs.push_back(files[0].dma_write(i * aligned_size, wbuf.get(), aligned_size)
+                futs.push_back(files[0].dma_write(i * aligned_size, wbuf.get(), aligned_size, prio_class)
                     .then([&files, i] (size_t) { return files[i].flush(); }));
             }
             co_await when_all_succeed(futs.begin(), futs.end());
@@ -99,7 +91,8 @@ int main(int ac, char** av) {
         ("blocks", bpo::value<size_t>()->default_value(64), "")
         ("size", bpo::value<size_t>()->default_value(4096), "")
         ("file1", bpo::value<sstring>()->default_value("file1"), "")
-        ("file2", bpo::value<sstring>()->default_value("file2"), "")
+        ("file2", bpo::value<sstring>(), "")
+        ("slow-prio", bpo::value<bool>()->default_value(false), "")
         ;
     return app.run(ac, av, [&app] () -> future<> {
         auto&& config = app.configuration();
@@ -107,10 +100,18 @@ int main(int ac, char** av) {
         auto seconds = config["seconds"].as<size_t>();
         auto blocks = config["blocks"].as<size_t>();
         auto file1 = config["file1"].as<sstring>();
-        auto file2 = config["file2"].as<sstring>();
+        auto file2 = config.contains("file2") ? config["file2"].as<sstring>() : sstring();
+        bool use_prio = config["slow-prio"].as<bool>();
 
-        auto fast_fut = demo_with_file(seconds, chunk_size, blocks, file1);
-        auto slow_fut = demo_with_file(seconds, chunk_size, blocks, file2);
+        auto fast_prio_class = io_priority_class::register_one("fast", 1000);
+        auto slow_prio_class = io_priority_class::register_one("slow", 1);
+
+        auto fast_fut = demo_with_file(seconds, chunk_size, blocks, file1, fast_prio_class);
+        auto slow_fut = make_ready_future();
+        
+        if (!file2.empty()) {
+            slow_fut = demo_with_file(seconds, chunk_size, blocks, file2, use_prio ? slow_prio_class : fast_prio_class);
+        } 
 
         co_await std::move(fast_fut);
         co_await std::move(slow_fut);
