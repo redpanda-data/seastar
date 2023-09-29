@@ -58,8 +58,6 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
     std::vector<future<>> futs;
     futs.reserve(blocks);
 
-    future<size_t> slow_fut = make_ready_future<size_t>(0);
-
     for (size_t i = 0; i < seconds; ++i) {
         size_t count = 0;
         auto start = std::chrono::steady_clock::now();
@@ -67,7 +65,7 @@ future<> demo_with_file(size_t seconds, size_t aligned_size, size_t blocks, sstr
 
         while (start < end) {
             for (size_t i = 0; i < blocks; ++i) {
-                futs.push_back(files[0].dma_write(i * aligned_size, wbuf.get(), aligned_size, prio_class)
+                futs.push_back(files[i].dma_write(0, wbuf.get(), aligned_size, prio_class)
                     .then([&files, i] (size_t) { return files[i].flush(); }));
             }
             co_await when_all_succeed(futs.begin(), futs.end());
