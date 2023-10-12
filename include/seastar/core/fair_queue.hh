@@ -326,6 +326,8 @@ private:
     std::vector<std::unique_ptr<priority_class_data>> _priority_classes;
     size_t _nr_classes = 0;
     capacity_t _last_accumulated = 0;
+    // Metric to count how many times dispatch has been throttled on the per tick threshold
+    size_t _throttled_per_tick_threshold = 0;
 
     /*
      * When the shared capacity os over the local queue delays
@@ -404,6 +406,8 @@ public:
     clock_type::time_point next_pending_aio() const noexcept;
 
     std::vector<seastar::metrics::impl::metric_definition_impl> metrics(class_id c);
+    // Metrics that are accounted across all classes
+    std::vector<seastar::metrics::impl::metric_definition_impl> global_metrics();
 };
 /// @}
 

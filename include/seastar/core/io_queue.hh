@@ -96,6 +96,7 @@ private:
     io_group_ptr _group;
     boost::container::small_vector<fair_queue, 2> _streams;
     internal::io_sink& _sink;
+    seastar::metrics::metric_groups _metrics;
 
     friend struct ::io_queue_for_tests;
     priority_class_data& find_or_create_class(internal::priority_class pc);
@@ -195,6 +196,7 @@ public:
 private:
     static fair_queue::config make_fair_queue_config(const config& cfg, sstring label);
     void register_stats(sstring name, priority_class_data& pc);
+    void register_global_stats();
 };
 
 class io_group {

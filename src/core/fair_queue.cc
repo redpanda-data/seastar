@@ -429,6 +429,10 @@ void fair_queue::dispatch_requests(std::function<void(fair_queue_entry&)> cb) {
         }
     }
 
+    if (!_handles.empty() && (dispatched >= _group.per_tick_grab_threshold())) {
+        _throttled_per_tick_threshold++;
+    }
+
     for (auto&& h : preempt) {
         push_priority_class(*h);
     }
@@ -444,6 +448,15 @@ std::vector<seastar::metrics::impl::metric_definition_impl> fair_queue::metrics(
             sm::make_counter("adjusted_consumption",
                     [&pc] { return fair_group::capacity_tokens(pc._accumulated); },
                     sm::description("Consumed disk capacity units adjusted for class shares and idling preemption")),
+    });
+}
+
+std::vector<seastar::metrics::impl::metric_definition_impl> fair_queue::global_metrics() {
+    namespace sm = seastar::metrics;
+    return std::vector<sm::impl::metric_definition_impl>({
+            sm::make_counter("throttled_per_tick_threshold",
+                    [this] { return _throttled_per_tick_threshold; },
+                    sm::description("Number of times dispatch was throttled on the per tick threshold")),
     });
 }
 

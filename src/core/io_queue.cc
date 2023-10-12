@@ -561,6 +561,8 @@ io_queue::io_queue(io_group_ptr group, internal::io_sink& sink)
         _streams.emplace_back(*_group->_fgs[0], make_fair_queue_config(cfg, "rw"));
     }
 
+    register_global_stats();
+
     if (this_shard_id() == 0) {
         sstring caps_str;
         for (size_t sz = 512; sz <= 128 * 1024; sz <<= 1) {
@@ -812,6 +814,24 @@ std::vector<seastar::metrics::impl::metric_definition_impl> io_queue::priority_c
             }, sm::description("random delay time in the queue")),
             sm::make_gauge("shares", _shares, sm::description("current amount of shares"))
     });
+}
+
+void io_queue::register_global_stats() {
+    namespace sm = seastar::metrics;
+
+    auto owner_l = sm::shard_label(this_shard_id());
+    auto mnt_l = sm::label("mountpoint")(mountpoint());
+    auto group_l = sm::label("iogroup")(to_sstring(_group->_allocated_on));
+
+    std::vector<sm::metric_definition> metrics;
+    for (auto&& s : _streams) {
+        for (auto&& m : s.global_metrics()) {
+            m(owner_l)(mnt_l)(group_l)(sm::label("stream")(s.label()));
+            metrics.emplace_back(std::move(m));
+        }
+    }
+
+    _metrics.add_group("io_queue", std::move(metrics));
 }
 
 void io_queue::register_stats(sstring name, priority_class_data& pc) {
