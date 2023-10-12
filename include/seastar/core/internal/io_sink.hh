@@ -73,6 +73,10 @@ public:
         _pending_io.erase(_pending_io.begin(), _pending_io.begin() + drained);
         return drained;
     }
+
+    size_t queue_length() const {
+        return _pending_io.size();
+    }
 };
 
 } // namespace internal

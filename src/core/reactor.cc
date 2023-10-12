@@ -2685,6 +2685,8 @@ void reactor::register_metrics() {
             // total_operations value:DERIVE:0:U
             sm::make_counter("io_threaded_fallbacks", std::bind(&thread_pool::operation_count, _thread_pool.get()),
                     sm::description("Total number of io-threaded-fallbacks operations")),
+            sm::make_queue_length("io_sink_queue_length", [this] { return _io_sink.queue_length(); },
+                    sm::description("Number of operations in the io sink queue")),
 
     });
 
