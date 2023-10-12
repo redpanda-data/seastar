@@ -328,6 +328,9 @@ private:
     capacity_t _last_accumulated = 0;
     // Metric to count how many times dispatch has been throttled on the per tick threshold
     size_t _throttled_per_tick_threshold = 0;
+    // Metric to count the number of times this class was throttled dispatching
+    // because the token bucket run out of capacity
+    size_t _throttled_no_capacity = 0;
 
     /*
      * When the shared capacity os over the local queue delays

@@ -383,6 +383,7 @@ void fair_queue::dispatch_requests(std::function<void(fair_queue_entry&)> cb) {
         auto& req = h._queue.front();
         auto gr = grab_capacity(req);
         if (gr == grab_result::pending) {
+            _throttled_no_capacity++;
             break;
         }
 
@@ -457,6 +458,9 @@ std::vector<seastar::metrics::impl::metric_definition_impl> fair_queue::global_m
             sm::make_counter("throttled_per_tick_threshold",
                     [this] { return _throttled_per_tick_threshold; },
                     sm::description("Number of times dispatch was throttled on the per tick threshold")),
+            sm::make_counter("throttled_no_capacity",
+                    [this] { return _throttled_no_capacity; },
+                    sm::description("Number of times this class was throttled dispatching requests because of lacking token bucket capacity")),
     });
 }
 
