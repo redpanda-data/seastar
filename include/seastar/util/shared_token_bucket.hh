@@ -189,6 +189,10 @@ public:
         return wrapping_difference(from, head());
     }
 
+    T max_extra() const noexcept {
+        return _rovers.max_extra(_replenish_limit);
+    }
+
     template <typename Rep, typename Per>
     static auto rate_cast(const std::chrono::duration<Rep, Per> delta) noexcept {
         return std::chrono::duration_cast<rate_resolution>(delta);

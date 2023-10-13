@@ -256,6 +256,7 @@ public:
 
     capacity_t capacity_deficiency(capacity_t from) const noexcept;
     capacity_t ticket_capacity(fair_queue_ticket ticket) const noexcept;
+    capacity_t max_extra() const noexcept;
 
     std::chrono::duration<double> rate_limit_duration() const noexcept {
         std::chrono::duration<double, rate_resolution> dur((double)_token_bucket.limit() / _token_bucket.rate());
@@ -328,9 +329,12 @@ private:
     capacity_t _last_accumulated = 0;
     // Metric to count how many times dispatch has been throttled on the per tick threshold
     size_t _throttled_per_tick_threshold = 0;
-    // Metric to count the number of times this class was throttled dispatching
-    // because the token bucket run out of capacity
-    size_t _throttled_no_capacity = 0;
+    // Metrics to count the number of times this class was throttled dispatching
+    // because of the token bucket
+    // Throttled because of rate based limiting in the token bucket
+    size_t _throttled_no_capacity_rate = 0;
+    // Throttled because of disk feedback based limiting in the token bucket
+    size_t _throttled_no_capacity_feedback = 0;
 
     /*
      * When the shared capacity os over the local queue delays

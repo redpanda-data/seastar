@@ -154,6 +154,10 @@ auto fair_group::ticket_capacity(fair_queue_ticket t) const noexcept -> capacity
     return t.normalize(_cost_capacity) * fixed_point_factor;
 }
 
+auto fair_group::max_extra() const noexcept -> capacity_t {
+    return _token_bucket.max_extra();
+}
+
 // Priority class, to be used with a given fair_queue
 class fair_queue::priority_class_data {
     friend class fair_queue;
@@ -383,7 +387,19 @@ void fair_queue::dispatch_requests(std::function<void(fair_queue_entry&)> cb) {
         auto& req = h._queue.front();
         auto gr = grab_capacity(req);
         if (gr == grab_result::pending) {
-            _throttled_no_capacity++;
+            // To deduce the reason why we are token bucket limited we look at
+            // the "max-extra" in the token bucket. That is the difference
+            // between the head counter (tracking rate based refill) and the
+            // ceil counter (tracking feedback driven refill). If the pending
+            // request capacity is larger than the difference we say that we are
+            // feedback throttled and otherwise rate throttled. This is a bit racy
+            // given other threads migth refill the token bucket after we have
+            // grabbed and before checking now but it's probably ok in practice.
+            if (_pending->cap > _group.max_extra()) {
+                _throttled_no_capacity_feedback++;
+            } else {
+                _throttled_no_capacity_rate++;
+            }
             break;
         }
 
@@ -458,9 +474,14 @@ std::vector<seastar::metrics::impl::metric_definition_impl> fair_queue::global_m
             sm::make_counter("throttled_per_tick_threshold",
                     [this] { return _throttled_per_tick_threshold; },
                     sm::description("Number of times dispatch was throttled on the per tick threshold")),
-            sm::make_counter("throttled_no_capacity",
-                    [this] { return _throttled_no_capacity; },
-                    sm::description("Number of times this class was throttled dispatching requests because of lacking token bucket capacity")),
+            sm::make_counter("throttled_no_capacity_rate",
+                    [this] { return _throttled_no_capacity_rate; },
+                    sm::description("Number of times this class was throttled dispatching requests "
+                        "because of lacking token bucket capacity (and refill is rate limited)")),
+            sm::make_counter("throttled_no_capacity_feedback",
+                    [this] { return _throttled_no_capacity_feedback; },
+                    sm::description("Number of times this class was throttled dispatching requests "
+                        "because of lacking token bucket capacity (and refill is feedback limited)")),
     });
 }
 
