@@ -522,7 +522,7 @@ void impl::update_metrics_if_needed() {
         _current_metrics.resize(_value_map.size());
         size_t i = 0;
         for (auto&& mf : _value_map) {
-            metric_metadata_fifo metrics;
+            metric_metadata_vector metrics;
             _current_metrics[i].clear();
             for (auto&& m : mf.second) {
                 if (m.second && m.second->is_enabled()) {

@@ -21,7 +21,6 @@
 
 #pragma once
 
-#include <seastar/core/chunked_fifo.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/util/modules.hh>
 #include <seastar/core/sharded.hh>
@@ -335,7 +334,7 @@ public:
 
 using value_map = std::map<sstring, metric_family>;
 
-using metric_metadata_fifo = chunked_fifo<metric_info>;
+using metric_metadata_vector = std::vector<metric_info>;
 
 /*!
  * \brief holds a metric family metadata
@@ -346,7 +345,7 @@ using metric_metadata_fifo = chunked_fifo<metric_info>;
  */
 struct metric_family_metadata {
     metric_family_info mf;
-    metric_metadata_fifo metrics;
+    metric_metadata_vector metrics;
 };
 
 using value_vector = std::vector<metric_value>;
