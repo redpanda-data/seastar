@@ -426,11 +426,8 @@ foreign_ptr<values_reference> get_values(int handle) {
     auto impl = get_local_impl(handle);
     res.metadata = impl->metadata();
     auto & functions = impl->functions();
-
-    mv.reserve(functions.size());
     for (auto&& i : functions) {
         value_vector values;
-        values.reserve(i.size());
         for (auto&& v : i) {
             values.emplace_back(v());
         }
@@ -549,7 +546,7 @@ shared_ptr<metric_metadata> impl::metadata() {
     return _metadata;
 }
 
-std::vector<std::vector<metric_function>>& impl::functions() {
+std::vector<std::deque<metric_function>>& impl::functions() {
     update_metrics_if_needed();
     return _current_metrics;
 }

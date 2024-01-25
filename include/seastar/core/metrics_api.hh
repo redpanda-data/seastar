@@ -21,7 +21,6 @@
 
 #pragma once
 
-#include <seastar/core/chunked_fifo.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/util/modules.hh>
 #include <seastar/core/sharded.hh>
@@ -29,6 +28,8 @@
 #include <unordered_map>
 #include <boost/functional/hash.hpp>
 #endif
+
+#include <deque>
 
 /*!
  * \file metrics_api.hh
@@ -335,7 +336,7 @@ public:
 
 using value_map = std::map<sstring, metric_family>;
 
-using metric_metadata_fifo = chunked_fifo<metric_info>;
+using metric_metadata_fifo = std::deque<metric_info>;
 
 /*!
  * \brief holds a metric family metadata
@@ -349,9 +350,9 @@ struct metric_family_metadata {
     metric_metadata_fifo metrics;
 };
 
-using value_vector = std::vector<metric_value>;
+using value_vector = std::deque<metric_value>;
 using metric_metadata = std::vector<metric_family_metadata>;
-using metric_values = std::vector<value_vector>;
+using metric_values = std::deque<value_vector>;
 
 struct values_copy {
     shared_ptr<metric_metadata> metadata;
@@ -368,7 +369,7 @@ class impl {
     bool _dirty = true;
     shared_ptr<metric_metadata> _metadata;
     std::set<sstring> _labels;
-    std::vector<std::vector<metric_function>> _current_metrics;
+    std::vector<std::deque<metric_function>> _current_metrics;
     std::vector<relabel_config> _relabel_configs;
     std::unordered_multimap<seastar::sstring, int> _metric_families_to_replicate;
 public:
@@ -395,7 +396,7 @@ public:
 
     shared_ptr<metric_metadata> metadata();
 
-    std::vector<std::vector<metric_function>>& functions();
+    std::vector<std::deque<metric_function>>& functions();
 
     void update_metrics_if_needed();
 
