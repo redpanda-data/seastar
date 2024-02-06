@@ -90,7 +90,10 @@ if (NOT Seastar_SCHEDULING_GROUPS_COUNT MATCHES "^[1-9][0-9]*")
   message(FATAL_ERROR "Seastar_SCHEDULING_GROUPS_COUNT must be a positive number (${Seastar_SCHEDULING_GROUPS_COUNT})")
 endif()
 
-#
+option (Seastar_WITH_OSSL
+  "Use OpenSSL for underlying TLS mechanism"
+  OFF)
+
 # Add a dev build type.
 #
 # All pre-defined build modes include optimizations or debug info,
@@ -404,6 +407,10 @@ find_package (ragel 6.10 REQUIRED)
 find_package (Threads REQUIRED)
 find_package (PthreadSetName REQUIRED)
 find_package (Valgrind REQUIRED)
+# TODO(rob) - Add as cooking_ingredient instead
+if (Seastar_WITH_OSSL)
+  find_package (OpenSSL REQUIRED)
+endif()
 
 #
 # Code generation helpers.
@@ -728,7 +735,8 @@ add_library (seastar
   src/net/socket_address.cc
   src/net/stack.cc
   src/net/tcp.cc
-  src/net/tls.cc
+  $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:src/net/tls.cc>
+  $<$<BOOL:${Seastar_WITH_OSSL}>:src/net/ossl.cc>
   src/net/tls-impl.cc
   src/net/udp.cc
   src/net/unix_address.cc
@@ -747,7 +755,7 @@ add_library (seastar
   src/util/read_first_line.cc
   src/util/tmp_file.cc
   src/util/short_streams.cc
-  src/websocket/server.cc
+  $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:src/websocket/server.cc>
   )
 
 add_library (Seastar::seastar ALIAS seastar)
@@ -794,7 +802,12 @@ target_link_libraries (seastar
     SourceLocation::source_location
   PRIVATE
     ${CMAKE_DL_LIBS}
+    # TODO(rob) - GnuTLS still a dependency until its last use (gnutls_hash_hd_t) in
+    # seastar/net/tcp.hh can be removed
+    # $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:GnuTLS::gnutls>
     GnuTLS::gnutls
+    $<$<BOOL:${Seastar_WITH_OSSL}>:OpenSSL::SSL>
+    $<$<BOOL:${Seastar_WITH_OSSL}>:OpenSSL::Crypto>
     StdAtomic::atomic
     lksctp-tools::lksctp-tools
     rt::rt
