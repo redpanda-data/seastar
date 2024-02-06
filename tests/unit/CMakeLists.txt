@@ -342,8 +342,10 @@ seastar_add_test (httpd
     httpd_test.cc
     loopback_socket.hh)
 
+if (NOT ${Seastar_WITH_OSSL})
 seastar_add_test (websocket
   SOURCES websocket_test.cc)
+endif()
 
 seastar_add_test (ipv6
   SOURCES ipv6_test.cc)
