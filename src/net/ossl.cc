@@ -24,7 +24,11 @@ module;
 #endif
 
 #include <system_error>
+
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
 
 #ifdef SEASTAR_MODULE
 module seastar;
@@ -69,5 +73,43 @@ private:
         return msg;
     }
 };
+
+template<typename T, auto fn>
+struct ssl_deleter {
+    void operator()(T* ptr) { fn(ptr); }
+};
+
+template<typename T, auto fn>
+using ssl_handle = std::unique_ptr<T, ssl_deleter<T, fn>>;
+
+using bio_ptr = ssl_handle<BIO, BIO_free>;
+using evp_pkey_ptr = ssl_handle<EVP_PKEY, EVP_PKEY_free>;
+
+/// TODO: Implement the DH params impl struct
+///
+class tls::dh_params::impl {
+public:
+    impl(level) {}
+    impl(const blob&, x509_crt_format){}
+
+    operator EVP_PKEY*() const { return _pkey.get(); }
+
+private:
+    evp_pkey_ptr _pkey;
+};
+
+tls::dh_params::dh_params(level lvl) : _impl(std::make_unique<impl>(lvl))
+{}
+
+tls::dh_params::dh_params(const blob& b, x509_crt_format fmt)
+        : _impl(std::make_unique<impl>(b, fmt)) {
+}
+
+// TODO(rob) some small amount of code duplication here
+tls::dh_params::~dh_params() {
+}
+
+tls::dh_params::dh_params(dh_params&&) noexcept = default;
+tls::dh_params& tls::dh_params::operator=(dh_params&&) noexcept = default;
 
 }
