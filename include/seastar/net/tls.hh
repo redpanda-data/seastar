@@ -98,16 +98,6 @@ namespace tls {
         std::unique_ptr<impl> _impl;
     };
 
-    class x509_cert {
-        x509_cert(const blob&, x509_crt_format);
-
-        static future<x509_cert> from_file(const sstring&, x509_crt_format);
-    private:
-        class impl;
-        x509_cert(shared_ptr<impl>);
-        shared_ptr<impl> _impl;
-    };
-
     class abstract_credentials {
     public:
         virtual ~abstract_credentials() {};
