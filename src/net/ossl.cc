@@ -32,15 +32,18 @@ module;
 #include <openssl/evp.h>
 #include <openssl/pkcs12.h>
 #include <openssl/pem.h>
+#include <openssl/ssl.h>
 #include <openssl/bio.h>
 
 #ifdef SEASTAR_MODULE
 module seastar;
 #else
+#include "net/tls-impl.hh"
 #include <seastar/net/tls.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/net/stack.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/with_timeout.hh>
 #include <seastar/util/later.hh>
 #endif
 
@@ -102,6 +105,8 @@ using x509_store_ptr = ssl_handle<X509_STORE, X509_STORE_free>;
 using x509_store_ctx_ptr = ssl_handle<X509_STORE_CTX, X509_STORE_CTX_free>;
 using x509_chain_ptr = ssl_handle<STACK_OF(X509), X509_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
+using ssl_ctx_ptr = ssl_handle<SSL_CTX, SSL_CTX_free>;
+using ssl_ptr = ssl_handle<SSL, SSL_free>;
 
 /// TODO: Implement the DH params impl struct
 ///
@@ -290,6 +295,7 @@ public:
 
 private:
     friend class credentials_builder;
+    friend class session;
 
     x509_store_ptr _creds;
 
@@ -395,5 +401,467 @@ void tls::server_credentials::set_client_auth(client_auth ca) {
     _impl->set_client_auth(ca);
 }
 
+namespace tls {
+
+/**
+ * Session wraps gnutls session, and is the
+ * actual conduit for an TLS/SSL data flow.
+ *
+ * We use a connected_socket and its sink/source
+ * for IO. Note that we need to keep ownership
+ * of these, since we handle handshake etc.
+ *
+ * The implmentation below relies on OpenSSL, for the gnutls implementation
+ * see tls.cc and the CMake option 'Seastar_WITH_OSSL'
+ */
+class session : public enable_shared_from_this<session>, public session_impl {
+public:
+    typedef temporary_buffer<char> buf_type;
+    typedef net::fragment* frag_iter;
+
+    session(session_type t, shared_ptr<tls::certificate_credentials> creds,
+            std::unique_ptr<net::connected_socket_impl> sock, tls_options options = {})
+            : _type(t), _sock(std::move(sock)), _creds(creds->_impl),
+                   _in(_sock->source()), _out(_sock->sink()),
+                   _in_sem(1), _out_sem(1),  _options(options),
+                   _in_bio(BIO_new(BIO_s_mem())) , _out_bio(BIO_new(BIO_s_mem())),
+                   _ctx(make_ssl_context()),
+                   _ssl(SSL_new(_ctx.get())) {
+        if (!_ssl){
+            BIO_free(_in_bio);
+            BIO_free(_out_bio);
+            throw ossl_error("Failed to initialize ssl object");
+        }
+        if (t == session_type::SERVER) {
+            SSL_set_accept_state(_ssl.get());
+        } else {
+            if (!_options.server_name.empty()){
+                SSL_set_tlsext_host_name(_ssl.get(), _options.server_name.c_str());
+            }
+            SSL_set_connect_state(_ssl.get());
+        }
+        // SSL_set_bio transfers ownership of the read and write bios to the SSL instance
+        SSL_set_bio(_ssl.get(), _in_bio, _out_bio);
+    }
+
+    session(session_type t, shared_ptr<certificate_credentials> creds,
+            connected_socket sock,
+            tls_options options = {})
+            : session(t, std::move(creds), net::get_impl::get(std::move(sock)), options) {}
+
+    // This method pulls encrypted data from the SSL context and writes
+    // it to the underlying socket.
+    future<> pull_encrypted_and_send(){
+        auto msg = make_lw_shared<scattered_message<char>>();
+        return do_until(
+            [this] { return BIO_ctrl_pending(_out_bio) == 0; },
+            [this, msg]{
+                // TODO(rob) avoid magic numbers
+                buf_type buf(4096);
+                auto n = BIO_read(_out_bio, buf.get_write(), buf.size());
+                if (n > 0){
+                    buf.trim(n);
+                    msg->append(std::move(buf));
+                } else if (!BIO_should_retry(_out_bio)) {
+                    return make_exception_future<>(ossl_error("Failed to read data from the BIO"));
+                }
+                return make_ready_future<>();
+        }).then([this, msg](){
+            if(msg->size() > 0){
+                return _out.put(std::move(*msg).release());
+            }
+            return make_ready_future<>();
+        });
+    }
+
+    // This method puts unencrypted data is written into the SSL context.
+    // This data is later able to be retrieved in its encrypted form by reading
+    // from the associated _out_bio
+    future<> do_put(frag_iter i, frag_iter e) {
+        return do_for_each(i, e, [this](net::fragment& f){
+            auto ptr = f.base;
+            auto size = f.size;
+            size_t off = 0;
+            // SSL_write isn't guaranteed to write entire fragments at a time
+            // continue to write until all is consumed by openssl
+            return repeat([this, ptr, size, off]() mutable {
+                if(off == size) {
+                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+                }
+                auto bytes_written = SSL_write(_ssl.get(), ptr + off, size - off);
+                if(bytes_written <= 0){
+                    const auto ec = SSL_get_error(_ssl.get(), bytes_written);
+                    if (ec == SSL_ERROR_WANT_READ || ec == SSL_ERROR_WANT_WRITE) {
+                        /// TODO(rob) handle this condition
+                    }
+                    return make_exception_future<stop_iteration>(ossl_error("Failed on call to SSL_write"));
+                }
+                off += bytes_written;
+                /// Regardless of error, continue to send fragments
+                return pull_encrypted_and_send().then([]{
+                    return make_ready_future<stop_iteration>(stop_iteration::no);
+                });
+            });
+        });
+    }
+
+    future<> put(net::packet p) override {
+        if (_error) {
+            return make_exception_future<>(_error);
+        }
+        if (_shutdown) {
+            return make_exception_future<>(std::system_error(EPIPE, std::system_category()));
+        }
+        if (!connected()) {
+            return handshake().then([this, p = std::move(p)]() mutable {
+               return put(std::move(p));
+            });
+        }
+
+        // We want to make sure that we write to the underlying bio with as large
+        // packets as possible. This is because eventually this translates to a
+        // sendmsg syscall. Further it results in larger TLS records which makes
+        // encryption/decryption faster. Hence to avoid cases where we would do
+        // an extra syscall for something like a 100 bytes header we linearize the
+        // packet if it's below the max TLS record size.
+        // TODO(Rob): Avoid magic numbers
+        if (p.nr_frags() > 1 && p.len() <= 16000) {
+            p.linearize();
+        }
+
+        auto i = p.fragments().begin();
+        auto e = p.fragments().end();
+        return with_semaphore(_out_sem, 1, std::bind(&session::do_put, this, i, e)).finally([p = std::move(p)] {});
+    }
+
+    future<> do_handshake() {
+        if (connected()) {
+            return make_ready_future<>();
+        }
+        if (_type == session_type::CLIENT && !_hostname.empty()) {
+            SSL_set_tlsext_host_name(_ssl.get(), _hostname.data());
+        }
+
+        return do_until(
+            [this]{ return connected() || eof(); },
+            [this]{
+                return wait_for_input().then([this]{
+                    auto n = SSL_accept(_ssl.get());
+                    auto ssl_err = SSL_get_error(_ssl.get(), n);
+                    switch (ssl_err) {
+                    case SSL_ERROR_NONE:
+                        break;
+                    case SSL_ERROR_WANT_READ:
+                        return pull_encrypted_and_send();
+                    case SSL_ERROR_WANT_WRITE:
+                        break;
+                    default:
+                        return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+                    }
+                    return make_ready_future<>();
+                });
+            });
+    }
+
+    future<> wait_for_input() {
+        if (eof()) {
+            return make_ready_future<>();
+        }
+        return _in.get().then([this](buf_type data) {
+            if (data.empty()) {
+                _eof = true;
+                return make_ready_future<>();
+            }
+            // Write the received data to the "read bio".  This bio is consumed
+            // by the SSL struct.  Think of this of writing encrypted data into
+            // the SSL session
+            auto buf = make_lw_shared<buf_type>(std::move(data));
+            return do_until(
+              [buf]{ return buf->empty(); },
+              [this, buf]{
+                  const auto n = BIO_write(_in_bio, buf->get(), buf->size());
+                  if (n <= 0) {
+                      return make_exception_future<>(ossl_error("Error while waiting for input"));
+                  }
+                  buf->trim_front(n);
+                  return make_ready_future();
+              }).finally([buf]{});
+        }).handle_exception([](auto ep){
+            return make_exception_future(ep);
+        });
+    }
+
+    future<buf_type> do_get() {
+        // Check if there is encrypted data sitting in ssls internal buffers, otherwise wait
+        // for data and use a
+        auto f = make_ready_future<>();
+        auto avail = BIO_ctrl_pending(_in_bio);
+        if (avail == 0) {
+            f = wait_for_input();
+        }
+        return f.then([this]() {
+            if (eof()) {
+                /// Connection has been closed by client
+                return make_ready_future<buf_type>(buf_type());
+            }
+            const auto buf_size = 4096;
+            buf_type buf(buf_size);
+            // Read decrypted data from ssls internal buffers
+            auto bytes_read = SSL_read(_ssl.get(), buf.get_write(), buf_size);
+            if (bytes_read <= 0) {
+                const auto ec = SSL_get_error(_ssl.get(), bytes_read);
+                if (ec == SSL_ERROR_ZERO_RETURN && connected()) {
+                    // Client has initiated shutdown by sending EOF
+                    _eof = true;
+                    close();
+                    return make_ready_future<buf_type>(buf_type());
+                }
+                return make_exception_future<buf_type>(ossl_error("Error upon call to SSL_read"));
+            }
+            buf.trim(bytes_read);
+            return make_ready_future<buf_type>(std::move(buf));
+        });
+    }
+
+    future<buf_type> get() override {
+        if (_error) {
+            return make_exception_future<temporary_buffer<char>>(_error);
+        }
+        if (_shutdown || eof()) {
+            return make_ready_future<temporary_buffer<char>>(buf_type());
+        }
+        if (!connected()) {
+            return handshake().then(std::bind(&session::get, this));
+        }
+        return with_semaphore(_in_sem, 1, std::bind(&session::do_get, this)).then([](temporary_buffer<char> buf) {
+            // TODO(rob) - maybe re-handshake?
+            return make_ready_future<temporary_buffer<char>>(std::move(buf));
+        });
+    }
+
+    future<> do_shutdown() {
+        const auto yield_and_retry = [this](){
+            return yield().then([this]{
+                return do_get().discard_result().then([this]{
+                    if (!eof()) {
+                        return do_shutdown();
+                    }
+                    return make_ready_future<>();
+                });
+            });
+        };
+
+        if(_error || !connected()) {
+            return make_ready_future();
+        }
+        auto res = SSL_shutdown(_ssl.get());
+        if (res == 1){
+            // Shutdown has completed successfully
+            return make_ready_future<>();
+        } else if (res == 0) {
+            // Shutdown process is ongoing and has not yet completed, peer has not yet replied
+            // 0 does not indicate error, calling SSL_get_error is undefined
+            return yield_and_retry();
+        }
+        // Shutdown was not successful, calling SSL_get_error will indicate why
+        auto f = make_ready_future<>();
+        auto err = SSL_get_error(_ssl.get(), res);
+        if (err == SSL_ERROR_WANT_READ) {
+            return yield_and_retry();
+        }
+
+        // Fatal error
+        return make_exception_future<>(ossl_error("fatal error during ssl shutdown"));
+    }
+
+    bool eof() const {
+        return _eof;
+    }
+
+    bool connected() const {
+        return SSL_is_init_finished(_ssl.get());
+    }
+
+    // Identical (or almost) portion of implementation
+    //
+    future<> wait_for_eof() {
+        if (!_options.wait_for_eof_on_shutdown) {
+            return make_ready_future();
+        }
+
+        // read records until we get an eof alert
+        // since this call could time out, we must not ac
+        return with_semaphore(_in_sem, 1, [this] {
+            if (_error || !connected()) {
+                return make_ready_future();
+            }
+            return repeat([this] {
+                if (eof()) {
+                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+                }
+                return do_get().then([](auto) {
+                   return make_ready_future<stop_iteration>(stop_iteration::no);
+                });
+            });
+        });
+    }
+    future<> handshake() {
+        // acquire both semaphores to sync both read & write
+        return with_semaphore(_in_sem, 1, [this] {
+            return with_semaphore(_out_sem, 1, [this] {
+                return do_handshake().handle_exception([this](auto ep) {
+                    if (!_error) {
+                        _error = ep;
+                    }
+                    return make_exception_future<>(_error);
+                });
+            });
+        });
+    }
+
+    future<> shutdown() {
+        // first, make sure any pending write is done.
+        // bye handshake is a flush operation, but this
+        // allows us to not pay extra attention to output state
+        //
+        // we only send a simple "bye" alert packet. Then we
+        // read from input until we see EOF. Any other reader
+        // before us will get it instead of us, and mark _eof = true
+        // in which case we will be no-op.
+        return with_semaphore(_out_sem, 1,
+                        std::bind(&session::do_shutdown, this)).then(
+                        std::bind(&session::wait_for_eof, this)).finally([me = shared_from_this()] {});
+        // note moved finally clause above. It is theorethically possible
+        // that we could complete do_shutdown just before the close calls
+        // below, get pre-empted, have "close()" finish, get freed, and
+        // then call wait_for_eof on stale pointer.
+    }
+    void close() noexcept override {
+        // only do once.
+        if (!std::exchange(_shutdown, true)) {
+            auto me = shared_from_this();
+            // running in background. try to bye-handshake us nicely, but after 10s we forcefully close.
+            (void)with_timeout(timer<>::clock::now() + std::chrono::seconds(10), shutdown()).finally([this] {
+                _eof = true;
+                try {
+                    (void)_in.close().handle_exception([](std::exception_ptr) {}); // should wake any waiters
+                } catch (...) {
+                }
+                try {
+                    (void)_out.close().handle_exception([](std::exception_ptr) {});
+                } catch (...) {
+                }
+                // make sure to wait for handshake attempt to leave semaphores. Must be in same order as
+                // handshake aqcuire, because in worst case, we get here while a reader is attempting
+                // re-handshake.
+                return with_semaphore(_in_sem, 1, [this] {
+                    return with_semaphore(_out_sem, 1, [] {});
+                });
+            }).then_wrapped([me = std::move(me)](future<> f) { // must keep object alive until here.
+                f.ignore_ready_future();
+            });
+        }
+    }
+    // helper for sink
+    future<> flush() noexcept override {
+        return with_semaphore(_out_sem, 1, [this] {
+            return _out.flush();
+        });
+    }
+
+    seastar::net::connected_socket_impl & socket() const override {
+        return *_sock;
+    }
+
+    future<std::optional<session_dn>> get_distinguished_name() override {
+        using result_t = std::optional<session_dn>;
+        return make_exception_future<result_t>(std::nullopt);
+    }
+
+    future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) override {
+        using result_t = std::vector<subject_alt_name>;
+        return make_exception_future<result_t>(std::runtime_error("unimplemented"));
+    }
+
+
+private:
+    std::optional<session_dn> extract_dn_information() const {
+        return std::nullopt;
+    }
+
+    ssl_ctx_ptr make_ssl_context(){
+        auto ssl_ctx = ssl_ctx_ptr(SSL_CTX_new(TLS_method()));
+        if (!ssl_ctx) {
+            throw ossl_error("Failed to initialize SSL context");
+        }
+
+        SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_NONE, nullptr);
+        SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
+
+        if (_type == session_type::SERVER) {
+            auto& server_creds = _creds->get_server_credentials();
+            if (server_creds.key == nullptr || server_creds.cert == nullptr) {
+                throw ossl_error("Cannot start session without cert/key pair for server");
+            }
+            if (!SSL_CTX_use_cert_and_key(ssl_ctx.get(), server_creds.cert.get(), server_creds.key.get(), nullptr, 1)) {
+                throw ossl_error("Failed to load cert/key pair");
+            }
+        }
+        return ssl_ctx;
+    }
+
+private:
+    session_type _type;
+
+    std::unique_ptr<net::connected_socket_impl> _sock;
+    shared_ptr<tls::certificate_credentials::impl> _creds;
+    data_source _in;
+    data_sink _out;
+    std::exception_ptr _error;
+
+    bool _eof = false;
+    // bool _maybe_load_system_trust = false;
+    semaphore _in_sem, _out_sem;
+    tls_options _options;
+
+    bool _shutdown = false;
+    buf_type _input;
+    gate _read_gate;
+    BIO* _in_bio;
+    BIO* _out_bio;
+    ssl_ctx_ptr _ctx;
+    ssl_ptr _ssl;
+};
+} // namespace tls
+
+future<connected_socket> tls::wrap_client(shared_ptr<certificate_credentials> cred, connected_socket&& s, sstring name) {
+    tls_options options{.server_name = std::move(name)};
+    return wrap_client(std::move(cred), std::move(s), std::move(options));
+}
+
+future<connected_socket> tls::wrap_client(shared_ptr<certificate_credentials> cred, connected_socket&& s, tls_options options) {
+    session_ref sess(seastar::make_shared<session>(session_type::CLIENT, std::move(cred), std::move(s),  options));
+    connected_socket sock(std::make_unique<tls_connected_socket_impl>(std::move(sess)));
+    return make_ready_future<connected_socket>(std::move(sock));
+}
+
+future<connected_socket> tls::wrap_server(shared_ptr<server_credentials> cred, connected_socket&& s) {
+    session_ref sess(seastar::make_shared<session>(session_type::SERVER, std::move(cred), std::move(s)));
+    connected_socket sock(std::make_unique<tls_connected_socket_impl>(std::move(sess)));
+    return make_ready_future<connected_socket>(std::move(sock));
+}
 
 } // namespace seastar
+
+// TODO(rob) fix
+const int seastar::tls::ERROR_UNKNOWN_COMPRESSION_ALGORITHM = 0;
+const int seastar::tls::ERROR_UNKNOWN_CIPHER_TYPE = 1;
+const int seastar::tls::ERROR_INVALID_SESSION = 2;
+const int seastar::tls::ERROR_UNEXPECTED_HANDSHAKE_PACKET = 3;
+const int seastar::tls::ERROR_UNKNOWN_CIPHER_SUITE = 4;
+const int seastar::tls::ERROR_UNKNOWN_ALGORITHM = 5;
+const int seastar::tls::ERROR_UNSUPPORTED_SIGNATURE_ALGORITHM = 6;
+const int seastar::tls::ERROR_SAFE_RENEGOTIATION_FAILED = 7;
+const int seastar::tls::ERROR_UNSAFE_RENEGOTIATION_DENIED = 8;
+const int seastar::tls::ERROR_UNKNOWN_SRP_USERNAME = 9;
+const int seastar::tls::ERROR_PREMATURE_TERMINATION = 10;
