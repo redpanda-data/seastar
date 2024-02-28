@@ -49,7 +49,7 @@ short hex_to_byte(char c) {
 /**
  * Convert a hex encoded 2 bytes substring to char
  */
-char hexstr_to_char(const std::string_view& in, size_t from) {
+char hexstr_to_char(std::string_view in, size_t from) {
 
     return static_cast<char>(hex_to_byte(in[from]) * 16 + hex_to_byte(in[from + 1]));
 }
@@ -92,16 +92,16 @@ bool decode(const std::string_view& in, sstring& out) {
 
 }
 
-bool url_decode(const std::string_view& in, sstring& out) {
+bool url_decode(std::string_view in, sstring& out) {
     return decode<true>(in, out);
 }
 
-bool path_decode(const std::string_view& in, sstring& out) {
+bool path_decode(std::string_view in, sstring& out) {
     return decode<false>(in, out);
 }
 
 
-sstring url_encode(const std::string_view& in) {
+sstring url_encode(std::string_view in) {
     size_t encodable_chars = 0;
     for (size_t i = 0; i < in.length(); i++) {
         if (should_encode(in[i])) {
