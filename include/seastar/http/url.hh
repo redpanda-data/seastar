@@ -28,6 +28,8 @@ namespace internal {
 
 bool url_decode(const std::string_view& in, sstring& out);
 
+bool path_decode(const std::string_view& in, sstring& out);
+
 /**
  * Makes a percent-encoded string out of the given parameter
  *
