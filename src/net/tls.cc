@@ -306,49 +306,6 @@ future<tls::dh_params> tls::dh_params::from_file(
     });
 }
 
-class tls::x509_cert::impl : gnutlsobj {
-public:
-    impl()
-            : _cert([] {
-                gnutls_x509_crt_t cert;
-                gtls_chk(gnutls_x509_crt_init(&cert));
-                return cert;
-            }()) {
-    }
-    impl(const blob& b, x509_crt_format fmt)
-        : impl()
-    {
-        blob_wrapper w(b);
-        gtls_chk(gnutls_x509_crt_import(*this, &w, gnutls_x509_crt_fmt_t(fmt)));
-    }
-    ~impl() {
-        if (_cert != nullptr) {
-            gnutls_x509_crt_deinit(_cert);
-        }
-    }
-    operator gnutls_x509_crt_t() const {
-        return _cert;
-    }
-
-private:
-    gnutls_x509_crt_t _cert;
-};
-
-tls::x509_cert::x509_cert(shared_ptr<impl> impl)
-        : _impl(std::move(impl)) {
-}
-
-tls::x509_cert::x509_cert(const blob& b, x509_crt_format fmt)
-        : x509_cert(::seastar::make_shared<impl>(b, fmt)) {
-}
-
-future<tls::x509_cert> tls::x509_cert::from_file(
-        const sstring& filename, x509_crt_format fmt) {
-    return read_fully(filename, "x509 certificate").then([fmt](temporary_buffer<char> buf) {
-        return make_ready_future<x509_cert>(x509_cert(blob(buf.get()), fmt));
-    });
-}
-
 class tls::certificate_credentials::impl: public gnutlsobj {
 public:
     impl()
