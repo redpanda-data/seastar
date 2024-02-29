@@ -67,8 +67,7 @@ inline char char_to_hex(unsigned char val) {
     return "0123456789ABCDEF"[val];
 }
 
-template<bool ReplacePlus>
-bool decode(const std::string_view& in, sstring& out) {
+bool decode(bool replace_plus, const std::string_view& in, sstring& out) {
     size_t pos = 0;
     sstring buff(in.length(), 0);
     for (size_t i = 0; i < in.length(); ++i) {
@@ -79,7 +78,7 @@ bool decode(const std::string_view& in, sstring& out) {
             } else {
                 return false;
             }
-        } else if (ReplacePlus && in[i] == '+') {
+        } else if (replace_plus && in[i] == '+') {
             buff[pos++] = ' ';
         } else {
             buff[pos++] = in[i];
@@ -93,11 +92,11 @@ bool decode(const std::string_view& in, sstring& out) {
 }
 
 bool url_decode(std::string_view in, sstring& out) {
-    return decode<true>(in, out);
+    return decode(true, in, out);
 }
 
 bool path_decode(std::string_view in, sstring& out) {
-    return decode<false>(in, out);
+    return decode(false, in, out);
 }
 
 

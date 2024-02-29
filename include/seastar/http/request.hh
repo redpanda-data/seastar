@@ -37,6 +37,7 @@
 #include <strings.h>
 #include <seastar/http/common.hh>
 #include <seastar/http/mime_types.hh>
+#include <seastar/http/url.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/string_utils.hh>
@@ -119,6 +120,26 @@ struct request {
             return "";
         }
         return res->second;
+    }
+
+    /**
+     * Search for the last path parameter of a given key
+     * @param key the path paramerter key
+     * @return the unescaped path parameter value, if it exists and can be path decoded successfully, otherwise it
+     *  returns an empty string
+     */
+    sstring get_path_param(const sstring& key) const {
+        auto res = param.find(key);
+        if (res == param.end()) {
+            return "";
+        }
+        auto& raw_path_param = res->second;
+        auto decoded_path_param = sstring{};
+        auto ok = internal::path_decode(raw_path_param, decoded_path_param);
+        if (!ok) {
+            return "";
+        }
+        return decoded_path_param;
     }
 
     /**
