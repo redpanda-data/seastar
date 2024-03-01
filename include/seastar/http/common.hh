@@ -58,6 +58,16 @@ public:
         return path(key);
     }
 
+    std::unordered_map<sstring, sstring>::const_iterator
+    find(const sstring& key) const {
+        return params.find(key);
+    }
+
+    std::unordered_map<sstring, sstring>::const_iterator
+    end() const {
+        return params.end();
+    }
+
     bool exists(const sstring& key) const {
         return params.find(key) != params.end();
     }

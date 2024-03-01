@@ -37,6 +37,7 @@
 #include <strings.h>
 #include <seastar/http/common.hh>
 #include <seastar/http/mime_types.hh>
+#include <seastar/http/url.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/string_utils.hh>
@@ -109,16 +110,36 @@ struct request {
     }
 
     /**
-     * Search for the first header of a given name
-     * @param name the header name
-     * @return a pointer to the header value, if it exists or empty string
+     * Search for the last query parameter of a given key
+     * @param key the query paramerter key
+     * @return the query parameter value, if it exists or empty string
      */
-    sstring get_query_param(const sstring& name) const {
-        auto res = query_parameters.find(name);
+    sstring get_query_param(const sstring& key) const {
+        auto res = query_parameters.find(key);
         if (res == query_parameters.end()) {
             return "";
         }
         return res->second;
+    }
+
+    /**
+     * Search for the last path parameter of a given key
+     * @param key the path paramerter key
+     * @return the unescaped path parameter value, if it exists and can be path decoded successfully, otherwise it
+     *  returns an empty string
+     */
+    sstring get_path_param(const sstring& key) const {
+        auto res = param.find(key);
+        if (res == param.end()) {
+            return "";
+        }
+        auto& raw_path_param = res->second;
+        auto decoded_path_param = sstring{};
+        auto ok = internal::path_decode(raw_path_param, decoded_path_param);
+        if (!ok) {
+            return "";
+        }
+        return decoded_path_param;
     }
 
     /**
@@ -284,7 +305,7 @@ struct request {
     static request make(httpd::operation_type type, sstring host, sstring path);
 
 private:
-    void add_param(const std::string_view& param);
+    void add_query_param(const std::string_view& param);
     sstring request_line() const;
     future<> write_request_headers(output_stream<char>& out);
     friend class experimental::connection;
