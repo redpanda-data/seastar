@@ -289,6 +289,14 @@ public:
         EVP_PKEY_free(pkey);
     }
 
+    std::vector<cert_info> get_x509_info() const {
+        return {};
+    }
+
+    std::vector<cert_info> get_x509_trust_list_info() const {
+        return {};
+    }
+
     void dh_params(const tls::dh_params& dh) {
         auto cpy = std::make_shared<tls::dh_params::impl>(*dh._impl);
         _dh_params = std::move(cpy);
