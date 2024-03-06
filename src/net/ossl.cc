@@ -257,6 +257,14 @@ public:
 
     void dh_params(const tls::dh_params&) {}
 
+    std::vector<cert_info> get_x509_info() const {
+        return {};
+    }
+
+    std::vector<cert_info> get_x509_trust_list_info() const {
+        return {};
+    }
+
     void set_client_auth(client_auth ca) {
         _client_auth = ca;
     }
