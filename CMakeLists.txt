@@ -92,7 +92,7 @@ endif()
 
 option (Seastar_WITH_OSSL
   "Use OpenSSL for underlying TLS mechanism"
-  OFF)
+  ON)
 
 # Add a dev build type.
 #
