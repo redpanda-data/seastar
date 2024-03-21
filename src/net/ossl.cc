@@ -25,6 +25,7 @@ module;
 
 #include <system_error>
 
+#include <openssl/x509.h>
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/safestack.h>
@@ -143,14 +144,39 @@ class tls::certificate_credentials::impl {
         evp_pkey_ptr key;
     };
 
+    static const int credential_store_idx = 0;
+
 public:
+    // This callback is designed to intercept the verification process and to implement an additional
+    // check, returning 0 or -1 will force verification to fail.
+    //
+    // However it has been implemented in this case soley to cache the last observed certificate so
+    // that it may be inspected during the session::verify() method, if desired.
+    //
+    static int verify_callback(int preverify_ok, X509_STORE_CTX* store_ctx) {
+        // Grab the 'this' pointer from the stores generic data cache, it should always exist
+        auto store = X509_STORE_CTX_get0_store(store_ctx);
+        auto credential_impl = static_cast<impl*>(X509_STORE_get_ex_data(store, credential_store_idx));
+        assert(credential_impl != nullptr);
+        // Store a pointer to the current connection certificate within the impl instance
+        auto cert = X509_STORE_CTX_get_current_cert(store_ctx);
+        X509_up_ref(cert);
+        credential_impl->_last_cert = x509_ptr(cert);
+        return preverify_ok;
+    }
+
     impl() : _creds([] {
         auto store = X509_STORE_new();
         if(store == nullptr) {
             throw std::bad_alloc();
         }
+        X509_STORE_set_verify_cb(store, verify_callback);
         return store;
-    }()) {}
+    }()) {
+        // The static verify_callback above will use the stored pointer to 'this' to store the last
+        // observed x509 certificate
+        assert(X509_STORE_set_ex_data(_creds.get(), credential_store_idx, this) == 1);
+    }
 
     static x509_ptr parse_x509_cert(const blob& b, x509_crt_format fmt){
         bio_ptr cert_bio(BIO_new_mem_buf(b.begin(), b.size()));
@@ -283,6 +309,10 @@ public:
         _dn_callback = std::move(cb);
     }
 
+    // Returns the certificate of last attempted verification attempt, if there was no attempt,
+    // this will not be updated and will remain stale
+    const x509_ptr& get_last_cert() const { return _last_cert; }
+
     operator X509_STORE*() const { return _creds.get(); }
 
     const server_credentials& get_server_credentials() const {
@@ -297,6 +327,7 @@ private:
     friend class credentials_builder;
     friend class session;
 
+    x509_ptr _last_cert;
     x509_store_ptr _creds;
 
     server_credentials _server_creds;
