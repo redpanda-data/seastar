@@ -854,7 +854,19 @@ public:
 
     future<std::optional<session_dn>> get_distinguished_name() override {
         using result_t = std::optional<session_dn>;
-        return make_exception_future<result_t>(std::nullopt);
+        if (_error) {
+            return make_exception_future<result_t>(_error);
+        }
+        if (_shutdown) {
+            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
+        }
+        if (!connected()) {
+            return handshake().then([this]() mutable {
+               return get_distinguished_name();
+            });
+        }
+        result_t dn = extract_dn_information();
+        return make_ready_future<result_t>(std::move(dn));
     }
 
     future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) override {
