@@ -104,16 +104,6 @@ namespace tls {
         std::unique_ptr<impl> _impl;
     };
 
-    class x509_cert {
-        x509_cert(const blob&, x509_crt_format);
-
-        static future<x509_cert> from_file(const sstring&, x509_crt_format);
-    private:
-        class impl;
-        x509_cert(shared_ptr<impl>);
-        shared_ptr<impl> _impl;
-    };
-
     class abstract_credentials {
     public:
         virtual ~abstract_credentials() {};
@@ -151,6 +141,10 @@ namespace tls {
      * \param issuer The issuer DN string
      */
     using dn_callback = noncopyable_function<void(session_type type, sstring subject, sstring issuer)>;
+
+    enum class client_auth {
+        NONE, REQUEST, REQUIRE
+    };
 
     /**
      * Holds certificates and keys.
@@ -234,6 +228,9 @@ namespace tls {
          */
         std::optional<std::vector<cert_info>> get_trust_list_info() const noexcept;
 
+        /// TODO(rob) comment these
+        void enable_load_system_trust();
+        void set_client_auth(client_auth);
     private:
         class impl;
         friend class session;
@@ -249,10 +246,6 @@ namespace tls {
     class verification_error : public std::runtime_error {
     public:
         using runtime_error::runtime_error;
-    };
-
-    enum class client_auth {
-        NONE, REQUEST, REQUIRE
     };
 
     /**
