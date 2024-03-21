@@ -46,6 +46,7 @@ module seastar;
 #include <seastar/core/gate.hh>
 #include <seastar/core/with_timeout.hh>
 #include <seastar/util/later.hh>
+#include <seastar/util/defer.hh>
 #endif
 
 namespace seastar {
@@ -586,11 +587,29 @@ public:
                         return pull_encrypted_and_send();
                     case SSL_ERROR_WANT_WRITE:
                         break;
+                    case SSL_ERROR_SSL:
+                    {
+                        // Catch-all for handshake errors
+                        auto ec = ERR_GET_REASON(ERR_get_error())
+                        switch (ec) {
+                        case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
+                        case SSL_R_CERTIFICATE_VERIFY_FAILED:
+                        case SSL_R_NO_CERTIFICATES_RETURNED:
+                            verify(); // should throw
+                            [[fallthrough]];
+                        default:
+                            return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+                        }
+                    }
                     default:
-                        return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+                        return make_exception_future<>(ossl_error("Unhandled error code observed"));
                     }
                     return make_ready_future<>();
                 });
+            }).then([this]{
+                if (_type == session_type::CLIENT || _creds->get_client_auth() != client_auth::NONE) {
+                    verify();
+                }
             });
     }
 
@@ -705,6 +724,37 @@ public:
         return make_exception_future<>(ossl_error("fatal error during ssl shutdown"));
     }
 
+    void verify() {
+        // A success return code (0) does not signify if a cert was presented or not, that
+        // must be explicitly queried via SSL_get_peer_certificate
+        auto res = SSL_get_verify_result(_ssl.get());
+        if (res != X509_V_OK) {
+            sstring stat_str(X509_verify_cert_error_string(res));
+            auto dn = extract_dn_information();
+            if (dn) {
+                std::stringstream ss;
+                ss << stat_str;
+                if (stat_str.back() != ' ') {
+                    ss << ' ';
+                }
+                ss << "(Issuer=[" << dn->issuer << "], Subject=[" << dn->subject << "])";
+                stat_str = ss.str();
+            }
+            throw verification_error(stat_str);
+        } else if (SSL_get0_peer_certificate(_ssl.get()) == nullptr) {
+            if (_type == session_type::SERVER && _creds->get_client_auth() == client_auth::REQUIRE) {
+                throw verification_error("no certificate presented");
+            }
+            return;
+        }
+
+        if (_creds->_dn_callback) {
+            auto dn = extract_dn_information();
+            assert(dn.has_value());
+            _creds->_dn_callback(_type, std::move(dn->subject), std::move(dn->issuer));
+        }
+    }
+
     bool eof() const {
         return _eof;
     }
@@ -814,10 +864,23 @@ public:
         return make_exception_future<result_t>(std::runtime_error("unimplemented"));
     }
 
-
 private:
+
+    const x509_ptr& get_peer_certificate() const {
+        return _creds->get_last_cert();
+    }
+
     std::optional<session_dn> extract_dn_information() const {
-        return std::nullopt;
+        const auto& peer_cert = get_peer_certificate();
+        if (!peer_cert) {
+            return std::nullopt;
+        }
+        auto subject = get_ossl_string(X509_get_subject_name(peer_cert.get()));
+        auto issuer = get_ossl_string(X509_get_issuer_name(peer_cert.get()));
+        if(!subject || !issuer) {
+            throw ossl_error("error while extracting certificate DN strings");
+        }
+        return session_dn{.subject= std::move(*subject), .issuer = std::move(*issuer)};
     }
 
     ssl_ctx_ptr make_ssl_context(){
@@ -826,10 +889,20 @@ private:
             throw ossl_error("Failed to initialize SSL context");
         }
 
-        SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_NONE, nullptr);
-        SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
-
         if (_type == session_type::SERVER) {
+            switch(_creds->get_client_auth()) {
+                case client_auth::NONE:
+                default:
+                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_NONE, nullptr);
+                    break;
+                case client_auth::REQUEST:
+                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER, nullptr);
+                    break;
+                case client_auth::REQUIRE:
+                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+                    break;
+            }
+
             auto& server_creds = _creds->get_server_credentials();
             if (server_creds.key == nullptr || server_creds.cert == nullptr) {
                 throw ossl_error("Cannot start session without cert/key pair for server");
@@ -838,7 +911,21 @@ private:
                 throw ossl_error("Failed to load cert/key pair");
             }
         }
+        // Increments the reference count of *_creds, now should have a total ref count of two, will be deallocated
+        // when both OpenSSL and the certificate_manager call X509_STORE_free
+        SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
         return ssl_ctx;
+    }
+
+    static std::optional<sstring> get_ossl_string(X509_NAME* name){
+        if (auto name_str = X509_NAME_oneline(name, nullptr, 0)) {
+            // sstring constructor may throw, to ensure deallocation of this OpenSSL string in
+            // all cases, wrap the call to free() in a deferred_action
+            auto done = defer([&name_str]() noexcept { OPENSSL_free(name_str); });
+            sstring ossl_str(name_str);
+            return ossl_str;
+        }
+        return std::nullopt;
     }
 
 private:
