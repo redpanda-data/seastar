@@ -94,6 +94,26 @@ sstring asn1_str_to_str(T* asn1) {
     return sstring((char*)ASN1_STRING_get0_data(asn1), len);
 };
 
+static cert_info::bytes extract_x509_serial(X509* cert) {
+    constexpr size_t serial_max = 160;
+    const ASN1_INTEGER *serial_no = X509_get_serialNumber(cert);
+    const size_t serial_size = std::min(serial_max, (size_t)serial_no->length);
+    cert_info::bytes serial(cert_info::bytes::initialized_later{}, serial_size);
+    std::memcpy(serial.begin(), reinterpret_cast<cert_info::bytes::value_type*>(serial_no->data), serial_size);
+    return serial;
+}
+
+static time_t extract_x509_expiry(X509* cert) {
+    ASN1_TIME *not_after = X509_get_notAfter(cert);
+    if (not_after) {
+        struct tm tm_struct;
+        memset(&tm_struct, 0, sizeof(struct tm));
+        ASN1_TIME_to_tm(not_after, &tm_struct);
+        return mktime(&tm_struct);
+    }
+    return -1;
+}
+
 template<typename T, auto fn>
 struct ssl_deleter {
     void operator()(T* ptr) { fn(ptr); }
@@ -308,7 +328,21 @@ public:
     }
 
     std::vector<cert_info> get_x509_trust_list_info() const {
-        return {};
+        std::vector<cert_info> cert_infos;
+        STACK_OF(X509_OBJECT) *chain = X509_STORE_get0_objects(_creds.get());
+        auto num_elements = sk_X509_OBJECT_num(chain);
+        for (auto i=0; i < num_elements; i++) {
+            auto object = sk_X509_OBJECT_value(chain, i);
+            auto type = X509_OBJECT_get_type(object);
+            if (type == X509_LU_X509) {
+                auto cert = X509_OBJECT_get0_X509(object);
+                cert_infos.push_back(cert_info{
+                        .serial = extract_x509_serial(cert),
+                        .expiry = extract_x509_expiry(cert)});
+            }
+            num_elements -= 1;
+        }
+        return cert_infos;
     }
 
     void set_client_auth(client_auth ca) {
