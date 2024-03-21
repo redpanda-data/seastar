@@ -26,6 +26,8 @@ module;
 #include <system_error>
 
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/x509_vfy.h>
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/safestack.h>
@@ -86,6 +88,12 @@ private:
     }
 };
 
+template<typename T>
+sstring asn1_str_to_str(T* asn1) {
+    const auto len = ASN1_STRING_length(asn1);
+    return sstring((char*)ASN1_STRING_get0_data(asn1), len);
+};
+
 template<typename T, auto fn>
 struct ssl_deleter {
     void operator()(T* ptr) { fn(ptr); }
@@ -94,6 +102,10 @@ struct ssl_deleter {
 // Must define this method as sk_X509_pop_free is a macro
 void X509_pop_free(STACK_OF(X509)* ca) {
     sk_X509_pop_free(ca, X509_free);
+}
+
+void GENERAL_NAME_pop_free(GENERAL_NAMES* gns) {
+    sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
 }
 
 template<typename T, auto fn>
@@ -106,6 +118,8 @@ using x509_crl_ptr = ssl_handle<X509_CRL, X509_CRL_free>;
 using x509_store_ptr = ssl_handle<X509_STORE, X509_STORE_free>;
 using x509_store_ctx_ptr = ssl_handle<X509_STORE_CTX, X509_STORE_CTX_free>;
 using x509_chain_ptr = ssl_handle<STACK_OF(X509), X509_pop_free>;
+using x509_extension_ptr = ssl_handle<X509_EXTENSION, X509_EXTENSION_free>;
+using general_names_ptr = ssl_handle<GENERAL_NAMES, GENERAL_NAME_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
 using ssl_ctx_ptr = ssl_handle<SSL_CTX, SSL_CTX_free>;
 using ssl_ptr = ssl_handle<SSL, SSL_free>;
@@ -871,12 +885,118 @@ public:
         return make_ready_future<result_t>(std::move(dn));
     }
 
-    future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) override {
+    future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type> types) override {
         using result_t = std::vector<subject_alt_name>;
-        return make_exception_future<result_t>(std::runtime_error("unimplemented"));
+
+        if (_error) {
+            return make_exception_future<result_t>(_error);
+        }
+        if (_shutdown) {
+            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
+        }
+        if (!connected()) {
+            return handshake().then([this, types = std::move(types)]() mutable {
+               return get_alt_name_information(std::move(types));
+            });
+        }
+
+        const auto& peer_cert = get_peer_certificate();
+        if (!peer_cert) {
+            return make_ready_future<result_t>();
+        }
+        return make_ready_future<result_t>(do_get_alt_name_information(peer_cert, types));
     }
 
 private:
+    std::vector<subject_alt_name> do_get_alt_name_information(const x509_ptr &peer_cert,
+                                                              const std::unordered_set<subject_alt_name_type> &types) const {
+        int ext_idx = X509_get_ext_by_NID(peer_cert.get(), NID_subject_alt_name, -1);
+        if (ext_idx < 0) {
+            return {};
+        }
+        auto ext = x509_extension_ptr(X509_get_ext(peer_cert.get(), ext_idx));
+        if (!ext) {
+            return {};
+        }
+        auto names = general_names_ptr((GENERAL_NAMES*)X509V3_EXT_d2i(ext.get()));
+        if (!names) {
+            return {};
+        }
+        int num_names = sk_GENERAL_NAME_num(names.get());
+        std::vector<subject_alt_name> alt_names;
+        alt_names.reserve(num_names);
+
+        for (auto i = 0; i < num_names; i++) {
+            GENERAL_NAME *name = sk_GENERAL_NAME_value(names.get(), i);
+            if (auto known_t = field_to_san_type(name)) {
+                if (types.empty() || types.count(known_t->type)) {
+                    alt_names.push_back(std::move(*known_t));
+                }
+            }
+        }
+        return alt_names;
+    }
+
+    std::optional<subject_alt_name> field_to_san_type(GENERAL_NAME* name) const {
+        subject_alt_name san;
+        switch(name->type) {
+            case GEN_IPADD:
+            {
+                san.type = subject_alt_name_type::ipaddress;
+                const auto* data = ASN1_STRING_get0_data(name->d.iPAddress);
+                const auto size = ASN1_STRING_length(name->d.iPAddress);
+                if (size == sizeof(::in_addr)) {
+                    ::in_addr addr;
+                    memcpy(&addr, data, size);
+                    san.value = net::inet_address(addr);
+                } else if (size == sizeof(::in6_addr)) {
+                    ::in6_addr addr;
+                    memcpy(&addr, data, size);
+                    san.value = net::inet_address(addr);
+                } else {
+                    throw std::runtime_error(fmt::format("Unexpected size: {} for ipaddress alt name value", size));
+                }
+                break;
+            }
+            case GEN_EMAIL:
+            {
+                san.type = subject_alt_name_type::rfc822name;
+                san.value = asn1_str_to_str(name->d.rfc822Name);
+                break;
+            }
+            case GEN_URI:
+            {
+                san.type = subject_alt_name_type::uri;
+                san.value = asn1_str_to_str(name->d.uniformResourceIdentifier);
+                break;
+            }
+            case GEN_DNS:
+            {
+                san.type = subject_alt_name_type::dnsname;
+                san.value = asn1_str_to_str(name->d.dNSName);
+                break;
+            }
+            case GEN_OTHERNAME:
+            {
+                san.type = subject_alt_name_type::othername;
+                san.value = asn1_str_to_str(name->d.dNSName);
+                break;
+            }
+            case GEN_DIRNAME:
+            {
+                san.type = subject_alt_name_type::dn;
+                auto dirname = get_ossl_string(name->d.directoryName);
+                if (!dirname) {
+                    throw std::runtime_error("Expected non null value for SAN dirname");
+                }
+                san.value = std::move(*dirname);
+                break;
+            }
+            default:
+                return std::nullopt;
+        }
+        return san;
+    }
 
     const x509_ptr& get_peer_certificate() const {
         return _creds->get_last_cert();
