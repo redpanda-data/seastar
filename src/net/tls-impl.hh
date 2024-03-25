@@ -49,6 +49,7 @@ namespace tls {
 
 class session_impl {
 public:
+    virtual future<std::vector<certificate_data>> get_peer_certificate_chain() = 0;
     virtual future<> put(net::packet) = 0;
     virtual future<> flush() noexcept = 0;
     virtual future<temporary_buffer<char>> get() = 0;
@@ -56,6 +57,8 @@ public:
     virtual future<std::optional<session_dn>> get_distinguished_name() = 0;
     virtual seastar::net::connected_socket_impl & socket() const = 0;
     virtual future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) = 0;
+    virtual future<bool> is_resumed() = 0;
+    virtual future<session_data> get_session_resume_data() = 0;
 };
 
 struct session_ref {
@@ -142,6 +145,12 @@ public:
 
     future<> wait_input_shutdown() override {
         return _session->socket().wait_input_shutdown();
+    }
+    future<bool> check_session_is_resumed() {
+        return _session->is_resumed();
+    }
+    future<session_data> get_session_resume_data() {
+        return _session->get_session_resume_data();
     }
 };
 
