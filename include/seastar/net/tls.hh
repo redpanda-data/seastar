@@ -172,6 +172,14 @@ namespace tls {
     };
 
     /**
+     * Session resumption support.
+     * We only support TLS1.3 session tickets.
+     */
+    enum class session_resume_mode {
+        NONE, TLS13_SESSION_TICKET
+    };
+
+    /**
      * Holds certificates and keys.
      *
      * Typically, credentials are shared for multiple client/server
@@ -302,6 +310,7 @@ namespace tls {
         /// TODO(rob) comment these
         void enable_load_system_trust();
         void set_client_auth(client_auth);
+        void set_session_resume_mode(session_resume_mode);
     private:
         class impl;
         friend class session;
