@@ -1943,7 +1943,11 @@ SEASTAR_THREAD_TEST_CASE(test_tls13_session_tickets_invalidated_by_reload) {
     b.set_x509_key_file(cert, key, tls::x509_crt_format::PEM).get();
     b.set_x509_trust_file(certfile("catest.pem"), tls::x509_crt_format::PEM).get();
     b.set_session_resume_mode(tls::session_resume_mode::TLS13_SESSION_TICKET);
+#ifdef SEASTAR_WITH_TLS_OSSL
+    b.set_minimum_tls_version(tls::tls_version::tlsv1_3);
+#else
     b.set_priority_string("SECURE128:+SECURE192:-VERS-TLS-ALL:+VERS-TLS1.3");
+#endif
 
     auto creds = b.build_certificate_credentials();
     auto serv = b.build_reloadable_server_credentials([&p](const std::unordered_set<sstring>&, std::exception_ptr) {
