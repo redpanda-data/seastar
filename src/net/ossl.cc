@@ -324,6 +324,13 @@ public:
     void dh_params(const tls::dh_params&) {}
 
     std::vector<cert_info> get_x509_info() const {
+        if (_server_creds.cert) {
+            return {
+                cert_info{
+                    .serial = extract_x509_serial(_server_creds.cert.get()),
+                    .expiry = extract_x509_expiry(_server_creds.cert.get())}
+            };
+        }
         return {};
     }
 
