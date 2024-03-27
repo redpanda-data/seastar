@@ -174,9 +174,12 @@ tls::dh_params::dh_params(dh_params&&) noexcept = default;
 tls::dh_params& tls::dh_params::operator=(dh_params&&) noexcept = default;
 
 class tls::certificate_credentials::impl {
-    struct server_credentials{
+    struct certkey_pair {
         x509_ptr cert;
         evp_pkey_ptr key;
+        explicit operator bool() const noexcept {
+            return cert != nullptr && key != nullptr;
+        }
     };
 
     static const int credential_store_idx = 0;
@@ -282,7 +285,7 @@ public:
             throw ossl_error("Failed to verify cert/key pair");
         }
         X509_STORE_add_cert(*this, x509_cert.get());
-        _server_creds = server_credentials{.cert = std::move(x509_cert), .key = std::move(pkey)};
+        _cert_and_key = certkey_pair{.cert = std::move(x509_cert), .key = std::move(pkey)};
     }
 
     void set_simple_pkcs12(const blob& b, x509_crt_format, const sstring& password) {
@@ -302,7 +305,7 @@ public:
                 EVP_PKEY_free(pkey);
                 throw ossl_error("Failed to verify cert/key pair");
             }
-            _server_creds = server_credentials{.cert = x509_ptr(cert), .key = evp_pkey_ptr(pkey)};
+            _cert_and_key = certkey_pair{.cert = x509_ptr(cert), .key = evp_pkey_ptr(pkey)};
 
             // Iterate through all elements in the certificate chain, adding them to the store
             auto ca_ptr = x509_chain_ptr(ca);
@@ -324,11 +327,11 @@ public:
     void dh_params(const tls::dh_params&) {}
 
     std::vector<cert_info> get_x509_info() const {
-        if (_server_creds.cert) {
+        if (_cert_and_key.cert) {
             return {
                 cert_info{
-                    .serial = extract_x509_serial(_server_creds.cert.get()),
-                    .expiry = extract_x509_expiry(_server_creds.cert.get())}
+                    .serial = extract_x509_serial(_cert_and_key.cert.get()),
+                    .expiry = extract_x509_expiry(_cert_and_key.cert.get())}
             };
         }
         return {};
@@ -371,8 +374,8 @@ public:
 
     operator X509_STORE*() const { return _creds.get(); }
 
-    const server_credentials& get_server_credentials() const {
-        return _server_creds;
+    const certkey_pair& get_certkey_pair() const {
+        return _cert_and_key;
     }
 
     future<> set_system_trust() {
@@ -386,7 +389,7 @@ private:
     x509_ptr _last_cert;
     x509_store_ptr _creds;
 
-    server_credentials _server_creds;
+    certkey_pair _cert_and_key;
     std::shared_ptr<tls::dh_params::impl> _dh_params;
     client_auth _client_auth = client_auth::NONE;
     dn_callback _dn_callback;
@@ -1076,11 +1079,11 @@ private:
                     break;
             }
 
-            auto& server_creds = _creds->get_server_credentials();
-            if (server_creds.key == nullptr || server_creds.cert == nullptr) {
+            auto& ck_pair = _creds->get_certkey_pair();
+            if (ck_pair.key == nullptr || ck_pair.cert == nullptr) {
                 throw ossl_error("Cannot start session without cert/key pair for server");
             }
-            if (!SSL_CTX_use_cert_and_key(ssl_ctx.get(), server_creds.cert.get(), server_creds.key.get(), nullptr, 1)) {
+            if (!SSL_CTX_use_cert_and_key(ssl_ctx.get(), ck_pair.cert.get(), ck_pair.key.get(), nullptr, 1)) {
                 throw ossl_error("Failed to load cert/key pair");
             }
         }
