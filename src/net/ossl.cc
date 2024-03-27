@@ -1064,7 +1064,11 @@ private:
             throw ossl_error("Failed to initialize SSL context");
         }
 
+        const auto& ck_pair = _creds->get_certkey_pair();
         if (_type == session_type::SERVER) {
+            if (!ck_pair) {
+                throw ossl_error("Cannot start session without cert/key pair for server");
+            }
             switch(_creds->get_client_auth()) {
                 case client_auth::NONE:
                 default:
@@ -1077,11 +1081,10 @@ private:
                     SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
                     break;
             }
+        }
 
-            auto& ck_pair = _creds->get_certkey_pair();
-            if (ck_pair.key == nullptr || ck_pair.cert == nullptr) {
-                throw ossl_error("Cannot start session without cert/key pair for server");
-            }
+        // Servers must supply both certificate and key, clients may optionally use these
+        if (ck_pair) {
             if (!SSL_CTX_use_cert_and_key(ssl_ctx.get(), ck_pair.cert.get(), ck_pair.key.get(), nullptr, 1)) {
                 throw ossl_error("Failed to load cert/key pair");
             }
