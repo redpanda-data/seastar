@@ -362,11 +362,15 @@ public:
         return _client_auth;
     }
 
-    void set_priority_string(const sstring&) {}
+    void set_priority_string(const sstring& priority) {
+        _priority = priority;
+    }
 
     void set_dn_verification_callback(dn_callback cb) {
         _dn_callback = std::move(cb);
     }
+
+    const sstring& get_priority_string() const { return _priority; }
 
     // Returns the certificate of last attempted verification attempt, if there was no attempt,
     // this will not be updated and will remain stale
@@ -393,6 +397,7 @@ private:
     std::shared_ptr<tls::dh_params::impl> _dh_params;
     client_auth _client_auth = client_auth::NONE;
     dn_callback _dn_callback;
+    sstring _priority;
 };
 
 tls::certificate_credentials::certificate_credentials()
@@ -1092,6 +1097,12 @@ private:
         // Increments the reference count of *_creds, now should have a total ref count of two, will be deallocated
         // when both OpenSSL and the certificate_manager call X509_STORE_free
         SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
+
+        if (_creds->get_priority_string() != "") {
+            if (SSL_CTX_set_cipher_list(_ctx.get(), _creds->get_priority_string().c_str()) != 1) {
+                throw ossl_error("Failed to set priority list");
+            }
+        }
         return ssl_ctx;
     }
 
