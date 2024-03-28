@@ -621,51 +621,35 @@ public:
         return with_semaphore(_out_sem, 1, std::bind(&session::do_put, this, i, e)).finally([p = std::move(p)] {});
     }
 
-    future<> do_handshake() {
-        if (connected()) {
-            return make_ready_future<>();
+    template<typename session_func, typename want_read_func>
+    future<> do_handshake(session_func session_fn, want_read_func want_read_fn) {
+        auto n = session_fn(_ssl.get());
+        auto ssl_err = SSL_get_error(_ssl.get(), n);
+        switch (ssl_err) {
+        case SSL_ERROR_NONE:
+            break;
+        case SSL_ERROR_WANT_READ:
+            return want_read_fn();
+        case SSL_ERROR_WANT_WRITE:
+            return wait_for_input();
+        case SSL_ERROR_SSL:
+        {
+            // Catch-all for handshake errors
+            auto ec = ERR_GET_REASON(ERR_get_error());
+            switch (ec) {
+            case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
+            case SSL_R_CERTIFICATE_VERIFY_FAILED:
+            case SSL_R_NO_CERTIFICATES_RETURNED:
+                verify(); // should throw
+                [[fallthrough]];
+            default:
+                return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+            }
         }
-        if (_type == session_type::CLIENT && !_hostname.empty()) {
-            SSL_set_tlsext_host_name(_ssl.get(), _hostname.data());
+        default:
+            return make_exception_future<>(ossl_error("Unhandled error code observed"));
         }
-
-        return do_until(
-            [this]{ return connected() || eof(); },
-            [this]{
-                return wait_for_input().then([this]{
-                    auto n = SSL_accept(_ssl.get());
-                    auto ssl_err = SSL_get_error(_ssl.get(), n);
-                    switch (ssl_err) {
-                    case SSL_ERROR_NONE:
-                        break;
-                    case SSL_ERROR_WANT_READ:
-                        return pull_encrypted_and_send();
-                    case SSL_ERROR_WANT_WRITE:
-                        return wait_for_input();
-                    case SSL_ERROR_SSL:
-                    {
-                        // Catch-all for handshake errors
-                        auto ec = ERR_GET_REASON(ERR_get_error())
-                        switch (ec) {
-                        case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
-                        case SSL_R_CERTIFICATE_VERIFY_FAILED:
-                        case SSL_R_NO_CERTIFICATES_RETURNED:
-                            verify(); // should throw
-                            [[fallthrough]];
-                        default:
-                            return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
-                        }
-                    }
-                    default:
-                        return make_exception_future<>(ossl_error("Unhandled error code observed"));
-                    }
-                    return make_ready_future<>();
-                });
-            }).then([this]{
-                if (_type == session_type::CLIENT || _creds->get_client_auth() != client_auth::NONE) {
-                    verify();
-                }
-            });
+        return make_ready_future<>();
     }
 
     future<> wait_for_input() {
@@ -841,11 +825,26 @@ public:
             });
         });
     }
+
+
     future<> handshake() {
         // acquire both semaphores to sync both read & write
         return with_semaphore(_in_sem, 1, [this] {
             return with_semaphore(_out_sem, 1, [this] {
-                return do_handshake().handle_exception([this](auto ep) {
+                if (connected()) {
+                    return make_ready_future<>();
+                }
+                auto fn = (_type == session_type::SERVER) ?
+                        std::bind(&session::server_handshake, this) :
+                        std::bind(&session::client_handshake, this);
+                return do_until(
+                    [this]{ return connected(); },
+                    [fn = std::move(fn)]{ return fn(); }
+                ).then([this]{
+                    if (_type == session_type::CLIENT || _creds->get_client_auth() != client_auth::NONE) {
+                        verify();
+                    }
+                }).handle_exception([this](auto ep) {
                     if (!_error) {
                         _error = ep;
                     }
@@ -1099,6 +1098,28 @@ private:
             return ossl_str;
         }
         return std::nullopt;
+    }
+
+    future<> client_handshake() {
+        return do_handshake(SSL_connect, [this]{
+            return pull_encrypted_and_send().then([this]{
+                return wait_for_input().then([this]{
+                    if (eof()) {
+                        return make_exception_future<>(std::runtime_error("EOF observed during handshake"));
+                    }
+                    return make_ready_future<>();
+                });
+            });
+        });
+    }
+
+    future<> server_handshake() {
+        return wait_for_input().then([this]{
+            if (eof()) {
+                return make_exception_future<>(std::runtime_error("EOF observed during handshake"));
+            }
+            return do_handshake(SSL_accept, std::bind(&session::pull_encrypted_and_send, this));
+        });
     }
 
 private:
