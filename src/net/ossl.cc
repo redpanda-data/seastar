@@ -586,7 +586,7 @@ public:
                     case SSL_ERROR_WANT_READ:
                         return pull_encrypted_and_send();
                     case SSL_ERROR_WANT_WRITE:
-                        break;
+                        return wait_for_input();
                     case SSL_ERROR_SSL:
                     {
                         // Catch-all for handshake errors
