@@ -558,7 +558,8 @@ public:
                     buf.trim(n);
                     msg->append(std::move(buf));
                 } else if (!BIO_should_retry(_out_bio)) {
-                    return make_exception_future<>(ossl_error("Failed to read data from the BIO"));
+                    _error = std::make_exception_ptr(ossl_error("Failed to read data from the BIO"));
+                    return make_exception_future<>(_error);
                 }
                 return make_ready_future<>();
         }).then([this, msg](){
@@ -589,7 +590,8 @@ public:
                     if (ec == SSL_ERROR_WANT_READ || ec == SSL_ERROR_WANT_WRITE) {
                         /// TODO(rob) handle this condition
                     }
-                    return make_exception_future<stop_iteration>(ossl_error("Failed on call to SSL_write"));
+                    _error = std::make_exception_ptr(ossl_error("Failed on call to SSL_write"));
+                    return make_exception_future<stop_iteration>(_error);
                 }
                 off += bytes_written;
                 /// Regardless of error, continue to send fragments
@@ -651,11 +653,13 @@ public:
                 verify(); // should throw
                 [[fallthrough]];
             default:
-                return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+                _error = std::make_exception_ptr(ossl_error("Failed to establish SSL handshake"));
+                return make_exception_future<>(_error);
             }
         }
         default:
-            return make_exception_future<>(ossl_error("Unhandled error code observed"));
+            _error = std::make_exception_ptr(ossl_error("Unhandled error code observed"));
+            return make_exception_future<>(_error);
         }
         return make_ready_future<>();
     }
@@ -678,13 +682,12 @@ public:
               [this, buf]{
                   const auto n = BIO_write(_in_bio, buf->get(), buf->size());
                   if (n <= 0) {
-                      return make_exception_future<>(ossl_error("Error while waiting for input"));
+                      _error = std::make_exception_ptr(ossl_error("Error while waiting for input"));
+                      return make_exception_future<>(_error);
                   }
                   buf->trim_front(n);
                   return make_ready_future();
               }).finally([buf]{});
-        }).handle_exception([](auto ep){
-            return make_exception_future(ep);
         });
     }
 
@@ -713,7 +716,8 @@ public:
                     close();
                     return make_ready_future<buf_type>(buf_type());
                 }
-                return make_exception_future<buf_type>(ossl_error("Error upon call to SSL_read"));
+                _error = std::make_exception_ptr(ossl_error("Error upon call to SSL_read"));
+                return make_exception_future<buf_type>(_error);
             }
             buf.trim(bytes_read);
             return make_ready_future<buf_type>(std::move(buf));
@@ -768,7 +772,8 @@ public:
         }
 
         // Fatal error
-        return make_exception_future<>(ossl_error("fatal error during ssl shutdown"));
+        _error = std::make_exception_ptr(ossl_error("fatal error during ssl shutdown"));
+        return make_exception_future<>(_error);
     }
 
     void verify() {
