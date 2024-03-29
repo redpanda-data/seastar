@@ -710,13 +710,17 @@ public:
             auto bytes_read = SSL_read(_ssl.get(), buf.get_write(), buf_size);
             if (bytes_read <= 0) {
                 const auto ec = SSL_get_error(_ssl.get(), bytes_read);
-                if (ec == SSL_ERROR_ZERO_RETURN && connected()) {
+                if (ec == SSL_ERROR_ZERO_RETURN) {
                     // Client has initiated shutdown by sending EOF
                     _eof = true;
                     close();
                     return make_ready_future<buf_type>(buf_type());
+                } else if (ec == SSL_ERROR_WANT_READ) {
+                    // Not enough data resides in the internal SSL buffers to merit a read, i.e.
+                    // maybe a record doesn't exist in its entirety, therefore read more from input.
+                    return do_get();
                 }
-                _error = std::make_exception_ptr(ossl_error("Error upon call to SSL_read"));
+                _error = std::make_exception_ptr(ossl_error(fmt::format("Error upon call to SSL_read: {}", ec)));
                 return make_exception_future<buf_type>(_error);
             }
             buf.trim(bytes_read);
