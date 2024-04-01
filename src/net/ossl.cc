@@ -746,18 +746,7 @@ public:
     }
 
     future<> do_shutdown() {
-        const auto yield_and_retry = [this](){
-            return yield().then([this]{
-                return do_get().discard_result().then([this]{
-                    if (!eof()) {
-                        return do_shutdown();
-                    }
-                    return make_ready_future<>();
-                });
-            });
-        };
-
-        if(_error || !connected()) {
+        if(_error || !connected() || eof()) {
             return make_ready_future();
         }
         auto res = SSL_shutdown(_ssl.get());
@@ -767,13 +756,24 @@ public:
         } else if (res == 0) {
             // Shutdown process is ongoing and has not yet completed, peer has not yet replied
             // 0 does not indicate error, calling SSL_get_error is undefined
-            return yield_and_retry();
+            return yield().then([this]{
+                return do_shutdown();
+            });
         }
         // Shutdown was not successful, calling SSL_get_error will indicate why
-        auto f = make_ready_future<>();
         auto err = SSL_get_error(_ssl.get(), res);
         if (err == SSL_ERROR_WANT_READ) {
-            return yield_and_retry();
+            auto f = make_ready_future();
+            if (_type == session_type::CLIENT) {
+                // Clients will be sending the close_notify message, and expecting SSL_ERROR_ZERO_RETURN
+                // from the server, logic in wait_for_input will detect this and set _eof to true
+                f = pull_encrypted_and_send();
+            }
+            return f.then([this]{
+                return wait_for_input().then([this] {
+                    return do_shutdown();
+                });
+            });
         }
 
         // Fatal error
