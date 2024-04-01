@@ -54,6 +54,9 @@ public:
 
     future<> listen(socket_address addr, sstring crtfile, sstring keyfile, tls::client_auth ca = tls::client_auth::NONE) {
         _certs->set_client_auth(ca);
+        _certs->set_dn_verification_callback([](seastar::tls::session_type, sstring subject, sstring issuer){
+            std::cout << "DN Verification callback, subject: " << subject << " issuer: " << issuer << std::endl;
+        });
         return _certs->set_x509_key_file(crtfile, keyfile, tls::x509_crt_format::PEM).then([this, addr] {
             ::listen_options opts;
             opts.reuse_address = true;

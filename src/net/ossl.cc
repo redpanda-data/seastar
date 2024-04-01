@@ -25,6 +25,9 @@ module;
 
 #include <system_error>
 
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/x509_vfy.h>
 #include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/safestack.h>
@@ -45,6 +48,7 @@ module seastar;
 #include <seastar/core/gate.hh>
 #include <seastar/core/with_timeout.hh>
 #include <seastar/util/later.hh>
+#include <seastar/util/defer.hh>
 #endif
 
 namespace seastar {
@@ -84,6 +88,32 @@ private:
     }
 };
 
+template<typename T>
+sstring asn1_str_to_str(T* asn1) {
+    const auto len = ASN1_STRING_length(asn1);
+    return sstring((char*)ASN1_STRING_get0_data(asn1), len);
+};
+
+static cert_info::bytes extract_x509_serial(X509* cert) {
+    constexpr size_t serial_max = 160;
+    const ASN1_INTEGER *serial_no = X509_get_serialNumber(cert);
+    const size_t serial_size = std::min(serial_max, (size_t)serial_no->length);
+    cert_info::bytes serial(cert_info::bytes::initialized_later{}, serial_size);
+    std::memcpy(serial.begin(), reinterpret_cast<cert_info::bytes::value_type*>(serial_no->data), serial_size);
+    return serial;
+}
+
+static time_t extract_x509_expiry(X509* cert) {
+    ASN1_TIME *not_after = X509_get_notAfter(cert);
+    if (not_after) {
+        struct tm tm_struct;
+        memset(&tm_struct, 0, sizeof(struct tm));
+        ASN1_TIME_to_tm(not_after, &tm_struct);
+        return mktime(&tm_struct);
+    }
+    return -1;
+}
+
 template<typename T, auto fn>
 struct ssl_deleter {
     void operator()(T* ptr) { fn(ptr); }
@@ -92,6 +122,10 @@ struct ssl_deleter {
 // Must define this method as sk_X509_pop_free is a macro
 void X509_pop_free(STACK_OF(X509)* ca) {
     sk_X509_pop_free(ca, X509_free);
+}
+
+void GENERAL_NAME_pop_free(GENERAL_NAMES* gns) {
+    sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
 }
 
 template<typename T, auto fn>
@@ -104,6 +138,8 @@ using x509_crl_ptr = ssl_handle<X509_CRL, X509_CRL_free>;
 using x509_store_ptr = ssl_handle<X509_STORE, X509_STORE_free>;
 using x509_store_ctx_ptr = ssl_handle<X509_STORE_CTX, X509_STORE_CTX_free>;
 using x509_chain_ptr = ssl_handle<STACK_OF(X509), X509_pop_free>;
+using x509_extension_ptr = ssl_handle<X509_EXTENSION, X509_EXTENSION_free>;
+using general_names_ptr = ssl_handle<GENERAL_NAMES, GENERAL_NAME_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
 using ssl_ctx_ptr = ssl_handle<SSL_CTX, SSL_CTX_free>;
 using ssl_ptr = ssl_handle<SSL, SSL_free>;
@@ -143,14 +179,39 @@ class tls::certificate_credentials::impl {
         evp_pkey_ptr key;
     };
 
+    static const int credential_store_idx = 0;
+
 public:
+    // This callback is designed to intercept the verification process and to implement an additional
+    // check, returning 0 or -1 will force verification to fail.
+    //
+    // However it has been implemented in this case soley to cache the last observed certificate so
+    // that it may be inspected during the session::verify() method, if desired.
+    //
+    static int verify_callback(int preverify_ok, X509_STORE_CTX* store_ctx) {
+        // Grab the 'this' pointer from the stores generic data cache, it should always exist
+        auto store = X509_STORE_CTX_get0_store(store_ctx);
+        auto credential_impl = static_cast<impl*>(X509_STORE_get_ex_data(store, credential_store_idx));
+        assert(credential_impl != nullptr);
+        // Store a pointer to the current connection certificate within the impl instance
+        auto cert = X509_STORE_CTX_get_current_cert(store_ctx);
+        X509_up_ref(cert);
+        credential_impl->_last_cert = x509_ptr(cert);
+        return preverify_ok;
+    }
+
     impl() : _creds([] {
         auto store = X509_STORE_new();
         if(store == nullptr) {
             throw std::bad_alloc();
         }
+        X509_STORE_set_verify_cb(store, verify_callback);
         return store;
-    }()) {}
+    }()) {
+        // The static verify_callback above will use the stored pointer to 'this' to store the last
+        // observed x509 certificate
+        assert(X509_STORE_set_ex_data(_creds.get(), credential_store_idx, this) == 1);
+    }
 
     static x509_ptr parse_x509_cert(const blob& b, x509_crt_format fmt){
         bio_ptr cert_bio(BIO_new_mem_buf(b.begin(), b.size()));
@@ -263,11 +324,32 @@ public:
     void dh_params(const tls::dh_params&) {}
 
     std::vector<cert_info> get_x509_info() const {
+        if (_server_creds.cert) {
+            return {
+                cert_info{
+                    .serial = extract_x509_serial(_server_creds.cert.get()),
+                    .expiry = extract_x509_expiry(_server_creds.cert.get())}
+            };
+        }
         return {};
     }
 
     std::vector<cert_info> get_x509_trust_list_info() const {
-        return {};
+        std::vector<cert_info> cert_infos;
+        STACK_OF(X509_OBJECT) *chain = X509_STORE_get0_objects(_creds.get());
+        auto num_elements = sk_X509_OBJECT_num(chain);
+        for (auto i=0; i < num_elements; i++) {
+            auto object = sk_X509_OBJECT_value(chain, i);
+            auto type = X509_OBJECT_get_type(object);
+            if (type == X509_LU_X509) {
+                auto cert = X509_OBJECT_get0_X509(object);
+                cert_infos.push_back(cert_info{
+                        .serial = extract_x509_serial(cert),
+                        .expiry = extract_x509_expiry(cert)});
+            }
+            num_elements -= 1;
+        }
+        return cert_infos;
     }
 
     void set_client_auth(client_auth ca) {
@@ -283,6 +365,10 @@ public:
         _dn_callback = std::move(cb);
     }
 
+    // Returns the certificate of last attempted verification attempt, if there was no attempt,
+    // this will not be updated and will remain stale
+    const x509_ptr& get_last_cert() const { return _last_cert; }
+
     operator X509_STORE*() const { return _creds.get(); }
 
     const server_credentials& get_server_credentials() const {
@@ -297,6 +383,7 @@ private:
     friend class credentials_builder;
     friend class session;
 
+    x509_ptr _last_cert;
     x509_store_ptr _creds;
 
     server_credentials _server_creds;
@@ -552,12 +639,30 @@ public:
                     case SSL_ERROR_WANT_READ:
                         return pull_encrypted_and_send();
                     case SSL_ERROR_WANT_WRITE:
-                        break;
+                        return wait_for_input();
+                    case SSL_ERROR_SSL:
+                    {
+                        // Catch-all for handshake errors
+                        auto ec = ERR_GET_REASON(ERR_get_error())
+                        switch (ec) {
+                        case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
+                        case SSL_R_CERTIFICATE_VERIFY_FAILED:
+                        case SSL_R_NO_CERTIFICATES_RETURNED:
+                            verify(); // should throw
+                            [[fallthrough]];
+                        default:
+                            return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+                        }
+                    }
                     default:
-                        return make_exception_future<>(ossl_error("Failed to establish SSL handshake"));
+                        return make_exception_future<>(ossl_error("Unhandled error code observed"));
                     }
                     return make_ready_future<>();
                 });
+            }).then([this]{
+                if (_type == session_type::CLIENT || _creds->get_client_auth() != client_auth::NONE) {
+                    verify();
+                }
             });
     }
 
@@ -672,6 +777,37 @@ public:
         return make_exception_future<>(ossl_error("fatal error during ssl shutdown"));
     }
 
+    void verify() {
+        // A success return code (0) does not signify if a cert was presented or not, that
+        // must be explicitly queried via SSL_get_peer_certificate
+        auto res = SSL_get_verify_result(_ssl.get());
+        if (res != X509_V_OK) {
+            sstring stat_str(X509_verify_cert_error_string(res));
+            auto dn = extract_dn_information();
+            if (dn) {
+                std::stringstream ss;
+                ss << stat_str;
+                if (stat_str.back() != ' ') {
+                    ss << ' ';
+                }
+                ss << "(Issuer=[" << dn->issuer << "], Subject=[" << dn->subject << "])";
+                stat_str = ss.str();
+            }
+            throw verification_error(stat_str);
+        } else if (SSL_get0_peer_certificate(_ssl.get()) == nullptr) {
+            if (_type == session_type::SERVER && _creds->get_client_auth() == client_auth::REQUIRE) {
+                throw verification_error("no certificate presented");
+            }
+            return;
+        }
+
+        if (_creds->_dn_callback) {
+            auto dn = extract_dn_information();
+            assert(dn.has_value());
+            _creds->_dn_callback(_type, std::move(dn->subject), std::move(dn->issuer));
+        }
+    }
+
     bool eof() const {
         return _eof;
     }
@@ -773,18 +909,149 @@ public:
 
     future<std::optional<session_dn>> get_distinguished_name() override {
         using result_t = std::optional<session_dn>;
-        return make_exception_future<result_t>(std::nullopt);
+        if (_error) {
+            return make_exception_future<result_t>(_error);
+        }
+        if (_shutdown) {
+            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
+        }
+        if (!connected()) {
+            return handshake().then([this]() mutable {
+               return get_distinguished_name();
+            });
+        }
+        result_t dn = extract_dn_information();
+        return make_ready_future<result_t>(std::move(dn));
     }
 
-    future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) override {
+    future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type> types) override {
         using result_t = std::vector<subject_alt_name>;
-        return make_exception_future<result_t>(std::runtime_error("unimplemented"));
-    }
 
+        if (_error) {
+            return make_exception_future<result_t>(_error);
+        }
+        if (_shutdown) {
+            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
+        }
+        if (!connected()) {
+            return handshake().then([this, types = std::move(types)]() mutable {
+               return get_alt_name_information(std::move(types));
+            });
+        }
+
+        const auto& peer_cert = get_peer_certificate();
+        if (!peer_cert) {
+            return make_ready_future<result_t>();
+        }
+        return make_ready_future<result_t>(do_get_alt_name_information(peer_cert, types));
+    }
 
 private:
+    std::vector<subject_alt_name> do_get_alt_name_information(const x509_ptr &peer_cert,
+                                                              const std::unordered_set<subject_alt_name_type> &types) const {
+        int ext_idx = X509_get_ext_by_NID(peer_cert.get(), NID_subject_alt_name, -1);
+        if (ext_idx < 0) {
+            return {};
+        }
+        auto ext = x509_extension_ptr(X509_get_ext(peer_cert.get(), ext_idx));
+        if (!ext) {
+            return {};
+        }
+        auto names = general_names_ptr((GENERAL_NAMES*)X509V3_EXT_d2i(ext.get()));
+        if (!names) {
+            return {};
+        }
+        int num_names = sk_GENERAL_NAME_num(names.get());
+        std::vector<subject_alt_name> alt_names;
+        alt_names.reserve(num_names);
+
+        for (auto i = 0; i < num_names; i++) {
+            GENERAL_NAME *name = sk_GENERAL_NAME_value(names.get(), i);
+            if (auto known_t = field_to_san_type(name)) {
+                if (types.empty() || types.count(known_t->type)) {
+                    alt_names.push_back(std::move(*known_t));
+                }
+            }
+        }
+        return alt_names;
+    }
+
+    std::optional<subject_alt_name> field_to_san_type(GENERAL_NAME* name) const {
+        subject_alt_name san;
+        switch(name->type) {
+            case GEN_IPADD:
+            {
+                san.type = subject_alt_name_type::ipaddress;
+                const auto* data = ASN1_STRING_get0_data(name->d.iPAddress);
+                const auto size = ASN1_STRING_length(name->d.iPAddress);
+                if (size == sizeof(::in_addr)) {
+                    ::in_addr addr;
+                    memcpy(&addr, data, size);
+                    san.value = net::inet_address(addr);
+                } else if (size == sizeof(::in6_addr)) {
+                    ::in6_addr addr;
+                    memcpy(&addr, data, size);
+                    san.value = net::inet_address(addr);
+                } else {
+                    throw std::runtime_error(fmt::format("Unexpected size: {} for ipaddress alt name value", size));
+                }
+                break;
+            }
+            case GEN_EMAIL:
+            {
+                san.type = subject_alt_name_type::rfc822name;
+                san.value = asn1_str_to_str(name->d.rfc822Name);
+                break;
+            }
+            case GEN_URI:
+            {
+                san.type = subject_alt_name_type::uri;
+                san.value = asn1_str_to_str(name->d.uniformResourceIdentifier);
+                break;
+            }
+            case GEN_DNS:
+            {
+                san.type = subject_alt_name_type::dnsname;
+                san.value = asn1_str_to_str(name->d.dNSName);
+                break;
+            }
+            case GEN_OTHERNAME:
+            {
+                san.type = subject_alt_name_type::othername;
+                san.value = asn1_str_to_str(name->d.dNSName);
+                break;
+            }
+            case GEN_DIRNAME:
+            {
+                san.type = subject_alt_name_type::dn;
+                auto dirname = get_ossl_string(name->d.directoryName);
+                if (!dirname) {
+                    throw std::runtime_error("Expected non null value for SAN dirname");
+                }
+                san.value = std::move(*dirname);
+                break;
+            }
+            default:
+                return std::nullopt;
+        }
+        return san;
+    }
+
+    const x509_ptr& get_peer_certificate() const {
+        return _creds->get_last_cert();
+    }
+
     std::optional<session_dn> extract_dn_information() const {
-        return std::nullopt;
+        const auto& peer_cert = get_peer_certificate();
+        if (!peer_cert) {
+            return std::nullopt;
+        }
+        auto subject = get_ossl_string(X509_get_subject_name(peer_cert.get()));
+        auto issuer = get_ossl_string(X509_get_issuer_name(peer_cert.get()));
+        if(!subject || !issuer) {
+            throw ossl_error("error while extracting certificate DN strings");
+        }
+        return session_dn{.subject= std::move(*subject), .issuer = std::move(*issuer)};
     }
 
     ssl_ctx_ptr make_ssl_context(){
@@ -793,10 +1060,20 @@ private:
             throw ossl_error("Failed to initialize SSL context");
         }
 
-        SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_NONE, nullptr);
-        SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
-
         if (_type == session_type::SERVER) {
+            switch(_creds->get_client_auth()) {
+                case client_auth::NONE:
+                default:
+                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_NONE, nullptr);
+                    break;
+                case client_auth::REQUEST:
+                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER, nullptr);
+                    break;
+                case client_auth::REQUIRE:
+                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+                    break;
+            }
+
             auto& server_creds = _creds->get_server_credentials();
             if (server_creds.key == nullptr || server_creds.cert == nullptr) {
                 throw ossl_error("Cannot start session without cert/key pair for server");
@@ -805,7 +1082,21 @@ private:
                 throw ossl_error("Failed to load cert/key pair");
             }
         }
+        // Increments the reference count of *_creds, now should have a total ref count of two, will be deallocated
+        // when both OpenSSL and the certificate_manager call X509_STORE_free
+        SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
         return ssl_ctx;
+    }
+
+    static std::optional<sstring> get_ossl_string(X509_NAME* name){
+        if (auto name_str = X509_NAME_oneline(name, nullptr, 0)) {
+            // sstring constructor may throw, to ensure deallocation of this OpenSSL string in
+            // all cases, wrap the call to free() in a deferred_action
+            auto done = defer([&name_str]() noexcept { OPENSSL_free(name_str); });
+            sstring ossl_str(name_str);
+            return ossl_str;
+        }
+        return std::nullopt;
     }
 
 private:
