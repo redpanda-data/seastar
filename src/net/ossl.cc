@@ -284,7 +284,6 @@ public:
         if (!X509_verify(x509_cert.get(), pkey.get())) {
             throw ossl_error("Failed to verify cert/key pair");
         }
-        X509_STORE_add_cert(*this, x509_cert.get());
         _cert_and_key = certkey_pair{.cert = std::move(x509_cert), .key = std::move(pkey)};
     }
 
