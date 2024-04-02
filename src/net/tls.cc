@@ -1132,20 +1132,13 @@ void tls::reloadable_credentials<tls::certificate_credentials>::rebuild(const cr
     this->_impl = std::move(tmp->_impl);
 }
 
-template <>
-const tls::certificate_credentials &tls::reloadable_credentials<tls::certificate_credentials>::as_certificate_credentials() const noexcept {
-    return *this;
-}
+
 
 template<>
 void tls::reloadable_credentials<tls::server_credentials>::rebuild(const credentials_builder& builder) {
     builder.rebuild(*this);
 }
 
-template <>
-const tls::certificate_credentials &tls::reloadable_credentials<tls::server_credentials>::as_certificate_credentials() const noexcept{
-    return *this;
-}
 
 future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build_reloadable_certificate_credentials(reload_callback cb, std::optional<std::chrono::milliseconds> tolerance) const {
     return build_reloadable_certificate_credentials(wrap_reload_callback(std::move(cb)), tolerance);
@@ -1153,7 +1146,7 @@ future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build
 
 future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build_reloadable_certificate_credentials(reload_callback_with_creds cb, std::optional<std::chrono::milliseconds> tolerance) const {
     auto creds = seastar::make_shared<reloadable_credentials<tls::certificate_credentials>>(*this,[cb{std::move(cb)}](const credentials_builder& builder, const std::unordered_set<sstring>& files, std::exception_ptr ep) {
-         cb(files, *builder.build_certificate_credentials(), ep);
+         cb(files, *builder.build_certificate_credentials(), ep, builder.get_trust_file_blob());
          return make_ready_future();
     }, std::move(*build_certificate_credentials()), tolerance.value_or(reloadable_credentials_base::default_tolerance));
     return creds->init().then([creds] {
@@ -1163,7 +1156,7 @@ future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build
 
 future<shared_ptr<tls::server_credentials>> tls::credentials_builder::build_reloadable_server_credentials(reload_callback_with_creds cb, std::optional<std::chrono::milliseconds> tolerance) const {
     auto creds = seastar::make_shared<reloadable_credentials<tls::server_credentials>>(*this, [cb{std::move(cb)}](const credentials_builder& builder, const std::unordered_set<sstring>& files, std::exception_ptr ep) {
-         cb(files, *builder.build_server_credentials(), ep);
+         cb(files, *builder.build_server_credentials(), ep, builder.get_trust_file_blob());
          return make_ready_future();
     }, std::move(*build_server_credentials()), tolerance.value_or(reloadable_credentials_base::default_tolerance));
     return creds->init().then([creds] {
@@ -1184,20 +1177,13 @@ future<shared_ptr<tls::server_credentials>> tls::credentials_builder::build_relo
         return make_ready_future<shared_ptr<tls::server_credentials>>(creds);
     });
 }
-
-future<shared_ptr<tls::certificate_credentials>> tls::credentials_builder::build_reloadable_certificate_credentials(reload_callback cb, std::optional<std::chrono::milliseconds> tolerance) const {
-    return build_reloadable_certificate_credentials([cb = std::move(cb)](const credentials_builder&, const std::unordered_set<sstring>& files, std::exception_ptr p) {
-        cb(files, p);
-        return make_ready_future<>();
-    }, tolerance);
+std::optional<tls::blob> tls::credentials_builder::get_trust_file_blob() const {
+    if (auto i = _blobs.find(x509_trust_key); i != _blobs.end()) {
+        return std::make_optional<tls::blob>(boost::any_cast<const x509_simple&>(i->second).data);
+    }
+    return std::nullopt;
 }
 
-future<shared_ptr<tls::server_credentials>> tls::credentials_builder::build_reloadable_server_credentials(reload_callback cb, std::optional<std::chrono::milliseconds> tolerance) const {
-    return build_reloadable_server_credentials([cb = std::move(cb)](const credentials_builder&, const std::unordered_set<sstring>& files, std::exception_ptr p) {
-        cb(files, p);
-        return make_ready_future<>();
-    }, tolerance);
-}
 
 namespace tls {
 
