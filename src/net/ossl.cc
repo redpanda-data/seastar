@@ -697,7 +697,7 @@ public:
         // for data and use a
         auto f = make_ready_future<>();
         auto avail = BIO_ctrl_pending(_in_bio);
-        if (avail == 0) {
+        if (avail == 0 && SSL_pending(_ssl.get()) == 0) {
             f = wait_for_input();
         }
         return f.then([this]() {
