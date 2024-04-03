@@ -281,9 +281,11 @@ public:
         if (!pkey) {
             throw ossl_error("Error attempting to parse private key");
         }
+#if 0 // https://github.com/redpanda-data/core-internal/issues/1233
         if (!X509_verify(x509_cert.get(), pkey.get())) {
             throw ossl_error("Failed to verify cert/key pair");
         }
+#endif
         _cert_and_key = certkey_pair{.cert = std::move(x509_cert), .key = std::move(pkey)};
     }
 
@@ -298,12 +300,14 @@ public:
             if (!PKCS12_parse(p12.get(), password.c_str(), &pkey, &cert, &ca)) {
                 throw ossl_error("Failed to extract cert key pair from pkcs12 file");
             }
+#if 0 // https://github.com/redpanda-data/core-internal/issues/1233
             // Ensure signature validation checks pass before continuing
             if (!X509_verify(cert, pkey)) {
                 X509_free(cert);
                 EVP_PKEY_free(pkey);
                 throw ossl_error("Failed to verify cert/key pair");
             }
+#endif
             _cert_and_key = certkey_pair{.cert = x509_ptr(cert), .key = evp_pkey_ptr(pkey)};
 
             // Iterate through all elements in the certificate chain, adding them to the store
