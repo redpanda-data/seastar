@@ -586,8 +586,14 @@ public:
                 auto bytes_written = SSL_write(_ssl.get(), ptr + off, size - off);
                 if(bytes_written <= 0){
                     const auto ec = SSL_get_error(_ssl.get(), bytes_written);
-                    if (ec == SSL_ERROR_WANT_READ || ec == SSL_ERROR_WANT_WRITE) {
-                        /// TODO(rob) handle this condition
+                    if (ec == SSL_ERROR_WANT_WRITE) {
+                        return pull_encrypted_and_send().then([]{
+                            return stop_iteration::no;
+                        });
+                    } else if (ec == SSL_ERROR_WANT_READ) {
+                        return do_get().then([](auto){
+                            return stop_iteration::no;
+                        });
                     }
                     _error = std::make_exception_ptr(ossl_error("Failed on call to SSL_write"));
                     return make_exception_future<stop_iteration>(_error);
@@ -717,6 +723,10 @@ public:
                     // Not enough data resides in the internal SSL buffers to merit a read, i.e.
                     // maybe a record doesn't exist in its entirety, therefore read more from input.
                     return do_get();
+                } else if (ec == SSL_ERROR_WANT_WRITE) {
+                    // In the case TLS renegotiation needs to be performed and the buffers are full
+                    // SSL_read returns this error code
+                    return pull_encrypted_and_send().then([this]{ return do_get(); });
                 }
                 _error = std::make_exception_ptr(ossl_error(fmt::format("Error upon call to SSL_read: {}", ec)));
                 return make_exception_future<buf_type>(_error);
