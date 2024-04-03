@@ -695,13 +695,12 @@ public:
         // Check if there is encrypted data sitting in ssls internal buffers, otherwise wait
         // for data and use a
         auto f = make_ready_future<>();
-        auto avail = BIO_ctrl_pending(_in_bio);
-        if (avail == 0 && SSL_pending(_ssl.get()) == 0) {
+        auto avail = BIO_ctrl_pending(_in_bio) + SSL_pending(_ssl.get());
+        if (avail == 0) {
             f = wait_for_input();
         }
         return f.then([this]() {
-            if (eof()) {
-                /// Connection has been closed by client
+            if (eof() && SSL_pending(_ssl.get()) == 0) {
                 return make_ready_future<buf_type>(buf_type());
             }
             const auto buf_size = 4096;
