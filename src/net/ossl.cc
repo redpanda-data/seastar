@@ -385,13 +385,18 @@ public:
         return _cert_and_key;
     }
 
-    future<> set_system_trust() {
-        return make_ready_future<>();
-    }
-
 private:
+    friend class certificate_credentials;
     friend class credentials_builder;
     friend class session;
+
+    void set_load_system_trust(bool trust) {
+        _load_system_trust = trust;
+    }
+
+    bool need_load_system_trust() const {
+        return _load_system_trust;
+    }
 
     x509_ptr _last_cert;
     x509_store_ptr _creds;
@@ -399,6 +404,7 @@ private:
     certkey_pair _cert_and_key;
     std::shared_ptr<tls::dh_params::impl> _dh_params;
     client_auth _client_auth = client_auth::NONE;
+    bool _load_system_trust = false;
     dn_callback _dn_callback;
     sstring _priority;
 };
@@ -436,7 +442,8 @@ void tls::certificate_credentials::set_simple_pkcs12(const blob& b,
 }
 
 future<> tls::certificate_credentials::set_system_trust() {
-    return _impl->set_system_trust();
+    _impl->_load_system_trust = true;
+    return make_ready_future<>();
 }
 
 void tls::certificate_credentials::set_priority_string(const sstring& prio) {
@@ -473,7 +480,9 @@ std::optional<std::vector<cert_info>> tls::certificate_credentials::get_trust_li
     }
 }
 
-void tls::certificate_credentials::enable_load_system_trust() {}
+void tls::certificate_credentials::enable_load_system_trust() {
+    _impl->_load_system_trust = true;
+}
 
 void tls::certificate_credentials::set_client_auth(client_auth ca) {
     _impl->set_client_auth(ca);
@@ -857,6 +866,13 @@ public:
 
 
     future<> handshake() {
+        if (_creds->need_load_system_trust()) {
+            if (!SSL_CTX_set_default_verify_paths(_ctx.get())) {
+                throw ossl_error("Couldn't load system trust");
+            }
+            _creds->set_load_system_trust(false);
+        }
+
         // acquire both semaphores to sync both read & write
         return with_semaphore(_in_sem, 1, [this] {
             return with_semaphore(_out_sem, 1, [this] {
