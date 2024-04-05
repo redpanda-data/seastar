@@ -103,7 +103,8 @@ macro (seastar_find_dependencies)
     lksctp-tools # No version information published.
     numactl # No version information published.
     rt
-    yaml-cpp)
+    yaml-cpp
+    unordered_dense)
 
   # Arguments to `find_package` for each 3rd-party dependency.
   # Note that the version specification is a "minimal" version requirement.
@@ -143,6 +144,8 @@ macro (seastar_find_dependencies)
     OPTION ${Seastar_NUMA})
   seastar_set_dep_args (yaml-cpp REQUIRED
     VERSION 0.5.1)
+  seastar_set_dep_args (unordered_dense
+    VERSION 4.4.0 CONFIG REQUIRED)
 
   foreach (third_party ${_seastar_all_dependencies})
     if (NOT _seastar_dep_skip_${third_party})
