@@ -124,6 +124,10 @@ void X509_pop_free(STACK_OF(X509)* ca) {
     sk_X509_pop_free(ca, X509_free);
 }
 
+void X509_INFO_pop_free(STACK_OF(X509_INFO)* infos) {
+    sk_X509_INFO_pop_free(infos, X509_INFO_free);
+}
+
 void GENERAL_NAME_pop_free(GENERAL_NAMES* gns) {
     sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
 }
@@ -138,6 +142,7 @@ using x509_crl_ptr = ssl_handle<X509_CRL, X509_CRL_free>;
 using x509_store_ptr = ssl_handle<X509_STORE, X509_STORE_free>;
 using x509_store_ctx_ptr = ssl_handle<X509_STORE_CTX, X509_STORE_CTX_free>;
 using x509_chain_ptr = ssl_handle<STACK_OF(X509), X509_pop_free>;
+using x509_infos_ptr = ssl_handle<STACK_OF(X509_INFO), X509_INFO_pop_free>;
 using x509_extension_ptr = ssl_handle<X509_EXTENSION, X509_EXTENSION_free>;
 using general_names_ptr = ssl_handle<GENERAL_NAMES, GENERAL_NAME_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
@@ -216,7 +221,24 @@ public:
         assert(X509_STORE_set_ex_data(_creds.get(), credential_store_idx, this) == 1);
     }
 
-    static x509_ptr parse_x509_cert(const blob& b, x509_crt_format fmt){
+
+    // Parses a PEM certificate file that may contain more then one entry, calls the callback provided
+    // passing the associated X509_INFO* argument. The parameter is not retained so the caller must retain
+    // the item before the end of the function call.
+    template<typename LoadFunc>
+    static void iterate_pem_certs(const bio_ptr& cert_bio, LoadFunc fn) {
+        auto infos = x509_infos_ptr(PEM_X509_INFO_read_bio(cert_bio.get(), nullptr, nullptr, nullptr));
+        auto num_elements = sk_X509_INFO_num(infos.get());
+        if (num_elements <= 0) {
+            throw ossl_error("Failed to parse PEM cert");
+        }
+        for (auto i=0; i < num_elements; i++) {
+            auto object = sk_X509_INFO_value(infos.get(), i);
+            fn(object);
+        }
+    }
+
+    static x509_ptr parse_x509_cert(const blob& b, x509_crt_format fmt) {
         bio_ptr cert_bio(BIO_new_mem_buf(b.begin(), b.size()));
         x509_ptr cert;
         switch(fmt) {
@@ -226,8 +248,6 @@ public:
         case tls::x509_crt_format::DER:
             cert = x509_ptr(d2i_X509_bio(cert_bio.get(), nullptr));
             break;
-        default:
-            __builtin_unreachable();
         }
         if (!cert) {
             throw ossl_error("Failed to parse x509 certificate");
@@ -235,33 +255,48 @@ public:
         return cert;
     }
 
-    static x509_crl_ptr parse_x509_crl(const blob& b, x509_crt_format fmt){
+    void set_x509_trust(const blob& b, x509_crt_format fmt) {
+        bio_ptr cert_bio(BIO_new_mem_buf(b.begin(), b.size()));
+        x509_ptr cert;
+        switch(fmt) {
+        case tls::x509_crt_format::PEM:
+            iterate_pem_certs(cert_bio, [this](X509_INFO* info){
+                if (!info->x509) {
+                    throw ossl_error("Failed to parse x509 cert");
+                }
+                X509_STORE_add_cert(*this, info->x509);
+            });
+            break;
+        case tls::x509_crt_format::DER:
+            cert = x509_ptr(d2i_X509_bio(cert_bio.get(), nullptr));
+            if (!cert) {
+                throw ossl_error("Failed to parse x509 certificate");
+            }
+            X509_STORE_add_cert(*this, cert.get());
+            break;
+        }
+    }
+
+    void set_x509_crl(const blob& b, x509_crt_format fmt) {
         bio_ptr cert_bio(BIO_new_mem_buf(b.begin(), b.size()));
         x509_crl_ptr crl;
         switch(fmt) {
         case x509_crt_format::PEM:
-            crl = x509_crl_ptr(PEM_read_bio_X509_CRL(cert_bio.get(), nullptr, nullptr, nullptr));
+            iterate_pem_certs(cert_bio, [this](X509_INFO* info) {
+                if (!info->crl) {
+                    throw ossl_error("Failed to parse CRL");
+                }
+                X509_STORE_add_crl(*this, info->crl);
+            });
             break;
         case x509_crt_format::DER:
             crl = x509_crl_ptr(d2i_X509_CRL_bio(cert_bio.get(), nullptr));
+            if (!crl) {
+                throw ossl_error("Failed to parse x509 crl");
+            }
+            X509_STORE_add_crl(*this, crl.get());
             break;
-        default:
-            __builtin_unreachable();
         }
-        if (!crl) {
-            throw ossl_error("Failed to parse x509 crl");
-        }
-        return crl;
-    }
-
-    void set_x509_trust(const blob& b, x509_crt_format fmt) {
-        auto x509_cert = parse_x509_cert(b, fmt);
-        X509_STORE_add_cert(*this, x509_cert.get());
-    }
-
-    void set_x509_crl(const blob& b, x509_crt_format fmt) {
-        auto x509_crl = parse_x509_crl(b, fmt);
-        X509_STORE_add_crl(*this, x509_crl.get());
     }
 
     void set_x509_key(const blob& cert, const blob& key, x509_crt_format fmt) {
