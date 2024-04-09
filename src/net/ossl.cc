@@ -388,7 +388,6 @@ public:
                         .serial = extract_x509_serial(cert),
                         .expiry = extract_x509_expiry(cert)});
             }
-            num_elements -= 1;
         }
         return cert_infos;
     }
