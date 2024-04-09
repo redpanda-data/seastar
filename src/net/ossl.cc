@@ -1078,13 +1078,13 @@ private:
             switch(_creds->get_client_auth()) {
                 case client_auth::NONE:
                 default:
-                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_NONE, nullptr);
+                    SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_NONE, nullptr);
                     break;
                 case client_auth::REQUEST:
-                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER, nullptr);
+                    SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_PEER, nullptr);
                     break;
                 case client_auth::REQUIRE:
-                    SSL_CTX_set_verify(_ctx.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+                    SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
                     break;
             }
         }
@@ -1097,10 +1097,10 @@ private:
         }
         // Increments the reference count of *_creds, now should have a total ref count of two, will be deallocated
         // when both OpenSSL and the certificate_manager call X509_STORE_free
-        SSL_CTX_set1_cert_store(_ctx.get(), *_creds);
+        SSL_CTX_set1_cert_store(ssl_ctx.get(), *_creds);
 
         if (_creds->get_priority_string() != "") {
-            if (SSL_CTX_set_cipher_list(_ctx.get(), _creds->get_priority_string().c_str()) != 1) {
+            if (SSL_CTX_set_cipher_list(ssl_ctx.get(), _creds->get_priority_string().c_str()) != 1) {
                 throw ossl_error("Failed to set priority list");
             }
         }
