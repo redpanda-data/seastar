@@ -1226,7 +1226,6 @@ private:
 
     bool _shutdown = false;
     buf_type _input;
-    gate _read_gate;
     BIO* _in_bio;
     BIO* _out_bio;
     ssl_ctx_ptr _ctx;
