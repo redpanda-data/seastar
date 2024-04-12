@@ -638,7 +638,7 @@ public:
                             return stop_iteration::no;
                         });
                     } else if (ec == SSL_ERROR_WANT_READ) {
-                        return do_get().then([](auto){
+                        return maybe_wait_for_data().then([](){
                             return stop_iteration::no;
                         });
                     }
@@ -716,6 +716,32 @@ public:
         return make_ready_future<>();
     }
 
+    // Call this method when its desired to have a read performed, but if a read is already being
+    // performed, just return when that read completes
+    future<> maybe_wait_for_data() {
+        auto units = try_get_units(_in_sem, 1);
+        if (units) {
+            return wait_for_input().finally([units = std::move(units)]{});
+        }
+        // The lock is already aquired, just return. The idea being if the caller will recieve the
+        // same error code it will lead to return to this method again. If the semaphore is
+        // available the read will occur otherwise repeat until read is performed.
+        return make_ready_future<>();
+    }
+
+    // Call this method when its desired to write out data, but if a write is already being performed,
+    // just return when that write completes
+    future<> maybe_send_data() {
+        auto units = try_get_units(_out_sem, 1);
+        if (units) {
+            return pull_encrypted_and_send().finally([units = std::move(units)]{});
+        }
+        // The lock is already aquired, just return. The idea being if the caller will recieve the
+        // same error code it will lead to return to this method again. If the semaphore is
+        // available the read will occur otherwise repeat until read is performed.
+        return make_ready_future<>();
+    }
+
     future<> wait_for_input() {
         if (eof()) {
             return make_ready_future<>();
@@ -745,7 +771,7 @@ public:
 
     future<buf_type> do_get() {
         // Check if there is encrypted data sitting in ssls internal buffers, otherwise wait
-        // for data and use a
+        // for data and read then return the decrypted data from the ssl session
         auto f = make_ready_future<>();
         auto avail = BIO_ctrl_pending(_in_bio) + SSL_pending(_ssl.get());
         if (avail == 0) {
@@ -773,7 +799,7 @@ public:
                 } else if (ec == SSL_ERROR_WANT_WRITE) {
                     // In the case TLS renegotiation needs to be performed and the buffers are full
                     // SSL_read returns this error code
-                    return pull_encrypted_and_send().then([this]{ return do_get(); });
+                    return maybe_send_data().then([this]{ return do_get(); });
                 }
                 _error = std::make_exception_ptr(ossl_error(fmt::format("Error upon call to SSL_read: {}", ec)));
                 return make_exception_future<buf_type>(_error);
@@ -824,7 +850,7 @@ public:
                 f = pull_encrypted_and_send();
             }
             return f.then([this]{
-                return wait_for_input().then([this] {
+                return wait_for_eof().then([this] {
                     return do_shutdown();
                 });
             });
@@ -883,16 +909,16 @@ public:
 
         // read records until we get an eof alert
         // since this call could time out, we must not ac
-        return with_semaphore(_in_sem, 1, [this] {
-            if (_error || !connected()) {
-                return make_ready_future();
+        if (_error || !connected()) {
+            return make_ready_future();
+        }
+        return repeat([this] {
+            if (eof()) {
+                return make_ready_future<stop_iteration>(stop_iteration::yes);
             }
-            return repeat([this] {
-                if (eof()) {
-                    return make_ready_future<stop_iteration>(stop_iteration::yes);
-                }
-                return do_get().then([](auto) {
-                   return make_ready_future<stop_iteration>(stop_iteration::no);
+            return with_semaphore(_in_sem, 1, [this] {
+                return do_get().then([](auto){
+                    return stop_iteration::no;
                 });
             });
         });
@@ -941,10 +967,10 @@ public:
         // we only send a simple "bye" alert packet. Then we
         // read from input until we see EOF. Any other reader
         // before us will get it instead of us, and mark _eof = true
-        // in which case we will be no-op.
+        // in which case we will be no-op. This is performed all
+        // within do_shutdown
         return with_semaphore(_out_sem, 1,
-                        std::bind(&session::do_shutdown, this)).then(
-                        std::bind(&session::wait_for_eof, this)).finally([me = shared_from_this()] {});
+                        std::bind(&session::do_shutdown, this)).finally([me = shared_from_this()] {});
         // note moved finally clause above. It is theorethically possible
         // that we could complete do_shutdown just before the close calls
         // below, get pre-empted, have "close()" finish, get freed, and
@@ -1220,7 +1246,6 @@ private:
     std::exception_ptr _error;
 
     bool _eof = false;
-    // bool _maybe_load_system_trust = false;
     semaphore _in_sem, _out_sem;
     tls_options _options;
 
