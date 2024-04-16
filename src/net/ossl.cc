@@ -143,7 +143,6 @@ using x509_store_ptr = ssl_handle<X509_STORE, X509_STORE_free>;
 using x509_store_ctx_ptr = ssl_handle<X509_STORE_CTX, X509_STORE_CTX_free>;
 using x509_chain_ptr = ssl_handle<STACK_OF(X509), X509_pop_free>;
 using x509_infos_ptr = ssl_handle<STACK_OF(X509_INFO), X509_INFO_pop_free>;
-using x509_extension_ptr = ssl_handle<X509_EXTENSION, X509_EXTENSION_free>;
 using general_names_ptr = ssl_handle<GENERAL_NAMES, GENERAL_NAME_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
 using ssl_ctx_ptr = ssl_handle<SSL_CTX, SSL_CTX_free>;
@@ -1058,11 +1057,11 @@ private:
         if (ext_idx < 0) {
             return {};
         }
-        auto ext = x509_extension_ptr(X509_get_ext(peer_cert.get(), ext_idx));
+        auto ext = X509_get_ext(peer_cert.get(), ext_idx);
         if (!ext) {
             return {};
         }
-        auto names = general_names_ptr((GENERAL_NAMES*)X509V3_EXT_d2i(ext.get()));
+        auto names = general_names_ptr((GENERAL_NAMES*)X509V3_EXT_d2i(ext));
         if (!names) {
             return {};
         }
