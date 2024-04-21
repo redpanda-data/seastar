@@ -214,7 +214,7 @@ posix_file_impl::stat() noexcept {
         struct stat st;
         auto ret = ::fstat(fd, &st);
         return wrap_syscall(ret, st);
-    }).then([] (syscall_result_extra<struct stat> ret) {
+    }, submit_reason::file_operation).then([] (syscall_result_extra<struct stat> ret) {
         ret.throw_if_error();
         return make_ready_future<struct stat>(ret.extra);
     });
@@ -224,7 +224,7 @@ future<>
 posix_file_impl::truncate(uint64_t length) noexcept {
     return engine()._thread_pool->submit<syscall_result<int>>([this, length] {
         return wrap_syscall<int>(::ftruncate(_fd, length));
-    }).then([] (syscall_result<int> sr) {
+    }, submit_reason::file_operation).then([] (syscall_result<int> sr) {
         sr.throw_if_error();
         return make_ready_future<>();
     });
@@ -234,7 +234,7 @@ future<int>
 posix_file_impl::ioctl(uint64_t cmd, void* argp) noexcept {
     return engine()._thread_pool->submit<syscall_result<int>>([this, cmd, argp] () mutable {
         return wrap_syscall<int>(::ioctl(_fd, cmd, argp));
-    }).then([] (syscall_result<int> sr) {
+    }, submit_reason::file_operation).then([] (syscall_result<int> sr) {
         sr.throw_if_error();
         // Some ioctls require to return a positive integer back.
         return make_ready_future<int>(sr.result);
@@ -255,7 +255,7 @@ future<int>
 posix_file_impl::fcntl(int op, uintptr_t arg) noexcept {
     return engine()._thread_pool->submit<syscall_result<int>>([this, op, arg] () mutable {
         return wrap_syscall<int>(::fcntl(_fd, op, arg));
-    }).then([] (syscall_result<int> sr) {
+    }, submit_reason::file_operation).then([] (syscall_result<int> sr) {
         sr.throw_if_error();
         // Some fcntls require to return a positive integer back.
         return make_ready_future<int>(sr.result);
@@ -277,7 +277,7 @@ posix_file_impl::discard(uint64_t offset, uint64_t length) noexcept {
     return engine()._thread_pool->submit<syscall_result<int>>([this, offset, length] () mutable {
         return wrap_syscall<int>(::fallocate(_fd, FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,
             offset, length));
-    }).then([] (syscall_result<int> sr) {
+    }, submit_reason::file_operation).then([] (syscall_result<int> sr) {
         sr.throw_if_error();
         return make_ready_future<>();
     });
@@ -298,7 +298,7 @@ posix_file_impl::allocate(uint64_t position, uint64_t length) noexcept {
             supported = false; // Racy, but harmless.  At most we issue an extra call or two.
         }
         return wrap_syscall<int>(ret);
-    }).then([] (syscall_result<int> sr) {
+    }, submit_reason::file_operation).then([] (syscall_result<int> sr) {
         sr.throw_if_error();
         return make_ready_future<>();
     });
@@ -340,7 +340,7 @@ posix_file_impl::close() noexcept {
             try {
                 return engine()._thread_pool->submit<syscall_result<int>>([fd] {
                     return wrap_syscall<int>(::close(fd));
-                });
+                }, submit_reason::file_operation);
             } catch (...) {
                 report_exception("Running ::close() in reactor thread, submission failed with exception", std::current_exception());
                 return make_ready_future<syscall_result<int>>(wrap_syscall<int>(::close(fd)));
@@ -362,7 +362,7 @@ blockdev_file_impl::size() noexcept {
         uint64_t size;
         int ret = ::ioctl(_fd, BLKGETSIZE64, &size);
         return wrap_syscall(ret, size);
-    }).then([] (syscall_result_extra<uint64_t> ret) {
+    }, submit_reason::file_operation).then([] (syscall_result_extra<uint64_t> ret) {
         ret.throw_if_error();
         return make_ready_future<uint64_t>(ret.extra);
     });
@@ -662,7 +662,7 @@ blockdev_file_impl::discard(uint64_t offset, uint64_t length) noexcept {
     return engine()._thread_pool->submit<syscall_result<int>>([this, offset, length] () mutable {
         uint64_t range[2] { offset, length };
         return wrap_syscall<int>(::ioctl(_fd, BLKDISCARD, &range));
-    }).then([] (syscall_result<int> sr) {
+    }, submit_reason::file_operation).then([] (syscall_result<int> sr) {
         sr.throw_if_error();
         return make_ready_future<>();
     });
