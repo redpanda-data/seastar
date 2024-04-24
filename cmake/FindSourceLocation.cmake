@@ -41,6 +41,6 @@ if (NOT (TARGET SourceLocation::source_location))
        (NOT CxxSourceLocation_IMPLEMENTS_CWG2631))
     set_target_properties (SourceLocation::source_location
       PROPERTIES
-        INTERFACE_COMPILE_DEFINITIONS SEASTAR_BROKEN_SOURCE_LOCATION)
+        PUBLIC SEASTAR_BROKEN_SOURCE_LOCATION)
   endif ()
 endif ()
