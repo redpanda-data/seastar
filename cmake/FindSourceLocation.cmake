@@ -31,6 +31,7 @@ check_cxx_source_compiles ("${_source_location_test_code}" CxxSourceLocation_SUP
 
 file (READ ${CMAKE_CURRENT_LIST_DIR}/code_tests/Source_location_default_argument.cc _source_location_test_code)
 set(CMAKE_REQUIRED_FLAGS "${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_COMPILE_OPTION}")
+set(CMAKE_REQUIRED_LINK_OPTIONS "${CMAKE_CXX${CMAKE_CXX_STANDARD}_STANDARD_LINK_OPTION}")
 # see also https://cplusplus.github.io/CWG/issues/2631.html
 check_cxx_source_runs ("${_source_location_test_code}" CxxSourceLocation_IMPLEMENTS_CWG2631)
 cmake_pop_check_state ()
