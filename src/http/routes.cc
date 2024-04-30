@@ -47,10 +47,7 @@ routes::routes() : _general_handler([this](std::exception_ptr eptr) mutable {
     try {
         std::rethrow_exception(eptr);
     } catch (const redirect_exception& _e) {
-        auto rep = std::make_unique<http::reply>();
-        rep->add_header("Location", _e.url).set_status(_e.status()).done(
-                "json");
-        return rep;
+        return std::make_unique<http::reply>(_e.to_reply());
     } catch (...) {
         // Fall through to return exception reply
     }
@@ -115,9 +112,7 @@ future<std::unique_ptr<http::reply> > routes::handle(const sstring& path, std::u
             auto r =  handler->handle(path, std::move(req), std::move(rep));
             return r.handle_exception(_general_handler);
         } catch (const redirect_exception& _e) {
-            rep.reset(new http::reply());
-            rep->add_header("Location", _e.url).set_status(_e.status()).done(
-                    "json");
+	    *rep = _e.to_reply();
         } catch (...) {
             rep = exception_reply(std::current_exception());
         }
