@@ -218,7 +218,7 @@ SEASTAR_THREAD_TEST_CASE(exception_handler_case) {
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_int_distribution<> d(1, 100);
-  for (int a = 0; a < 100; a++) {
+  for (int a = 0; a < 10000; a++) {
     random_exception_catcher(100, d(gen));
   }
 
@@ -249,7 +249,7 @@ SEASTAR_THREAD_TEST_CASE(config_thrashing) {
   std::mt19937 gen(rd());
   std::uniform_int_distribution<> d(1, 100);
 
-  for (int a = 0; a < 100; a++) {
+  for (int a = 0; a < 10000; a++) {
     int r = d(gen);
     temporary_profiler_settings cp_0{r % 2 == 0, std::chrono::microseconds(r)};
   }
