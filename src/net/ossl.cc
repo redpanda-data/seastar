@@ -848,6 +848,9 @@ public:
                 f = pull_encrypted_and_send();
             }
             return f.then([this]{
+                if (!_options.wait_for_eof_on_shutdown) {
+                    return make_ready_future<>();
+                }
                 return wait_for_eof().then([this] {
                     return do_shutdown();
                 });
@@ -901,10 +904,6 @@ public:
     // Identical (or almost) portion of implementation
     //
     future<> wait_for_eof() {
-        if (!_options.wait_for_eof_on_shutdown) {
-            return make_ready_future();
-        }
-
         // read records until we get an eof alert
         // since this call could time out, we must not ac
         if (_error || !connected()) {
