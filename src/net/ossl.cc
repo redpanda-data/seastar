@@ -609,7 +609,15 @@ public:
                 return make_ready_future<>();
         }).then([this, msg](){
             if(msg->size() > 0){
-                return _out.put(std::move(*msg).release());
+                return _out.put(std::move(*msg).release()).handle_exception([](const std::exception_ptr eptr){
+                    try {
+                        std::rethrow_exception(eptr);
+                    } catch (const std::system_error& e) {
+                        return make_exception_future<>(e);
+                    } catch (...) {
+                        return make_exception_future<>(std::system_error(EIO, std::system_category()));
+                    }
+                });
             }
             return make_ready_future<>();
         });
