@@ -90,6 +90,7 @@ protected:
 public:
     virtual ~posix_file_impl() override;
     future<> flush(void) noexcept override;
+    future<> syncfs(void) noexcept override;
     future<struct stat> stat(void) noexcept override;
     future<> truncate(uint64_t length) noexcept override;
     future<> discard(uint64_t offset, uint64_t length) noexcept override;

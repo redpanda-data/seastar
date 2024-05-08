@@ -2328,6 +2328,16 @@ reactor::fstatfs(int fd) noexcept {
     });
 }
 
+future<>
+reactor::syncfs(int fd) noexcept {
+    return _thread_pool->submit<syscall_result<int>>([fd] {
+        auto ret = ::syncfs(fd);
+        return wrap_syscall(ret);
+    }).then([] (syscall_result<int> sr) {
+        sr.throw_if_error();
+    });
+}
+
 future<struct statvfs>
 reactor::statvfs(std::string_view pathname) noexcept {
     // Allocating memory for a sstring can throw, hence the futurize_invoke

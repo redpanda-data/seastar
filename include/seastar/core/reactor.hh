@@ -688,6 +688,7 @@ private:
 
     future<struct stat> fstat(int fd) noexcept;
     future<struct statfs> fstatfs(int fd) noexcept;
+    future<> syncfs(int fd) noexcept;
     friend future<shared_ptr<file_impl>> make_file_impl(int fd, file_open_options options, int flags) noexcept;
 public:
     future<> readable(pollable_fd_state& fd);
