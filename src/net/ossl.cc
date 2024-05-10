@@ -828,7 +828,7 @@ public:
     }
 
     future<> do_shutdown() {
-        if(_error || !connected() || eof()) {
+        if(_error || !connected()) {
             return make_ready_future();
         }
         auto res = SSL_shutdown(_ssl.get());
@@ -844,26 +844,17 @@ public:
         }
         // Shutdown was not successful, calling SSL_get_error will indicate why
         auto err = SSL_get_error(_ssl.get(), res);
-        if (err == SSL_ERROR_WANT_READ) {
-            auto f = make_ready_future();
-            if (_type == session_type::CLIENT) {
-                // Clients will be sending the close_notify message, and expecting SSL_ERROR_ZERO_RETURN
-                // from the server, logic in wait_for_input will detect this and set _eof to true
-                f = pull_encrypted_and_send();
-            }
-            return f.then([this]{
-                if (!_options.wait_for_eof_on_shutdown) {
-                    return make_ready_future<>();
-                }
-                return wait_for_eof().then([this] {
-                    return do_shutdown();
-                });
-            });
+        if (err != SSL_ERROR_WANT_READ) {
+            _error = std::make_exception_ptr(ossl_error("fatal error during ssl shutdown"));
+            return make_exception_future<>(_error);
         }
-
-        // Fatal error
-        _error = std::make_exception_ptr(ossl_error("fatal error during ssl shutdown"));
-        return make_exception_future<>(_error);
+        auto f = make_ready_future();
+        if (_type == session_type::CLIENT) {
+            // Clients will be sending the close_notify message, and expecting SSL_ERROR_ZERO_RETURN
+            // from the server, logic in wait_for_input will detect this and set _eof to true
+            return pull_encrypted_and_send();
+        }
+        return make_ready_future<>();
     }
 
     void verify() {
@@ -910,7 +901,7 @@ public:
     future<> wait_for_eof() {
         // read records until we get an eof alert
         // since this call could time out, we must not ac
-        if (_error || !connected()) {
+        if (!_options.wait_for_eof_on_shutdown || _error || !connected()) {
             return make_ready_future();
         }
         return repeat([this] {
@@ -971,7 +962,8 @@ public:
         // in which case we will be no-op. This is performed all
         // within do_shutdown
         return with_semaphore(_out_sem, 1,
-                        std::bind(&session::do_shutdown, this)).finally([me = shared_from_this()] {});
+                        std::bind(&session::do_shutdown, this)).then(
+                        std::bind(&session::wait_for_eof, this)).finally([me = shared_from_this()] {});
         // note moved finally clause above. It is theorethically possible
         // that we could complete do_shutdown just before the close calls
         // below, get pre-empted, have "close()" finish, get freed, and
