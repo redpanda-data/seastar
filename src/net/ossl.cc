@@ -1189,9 +1189,9 @@ private:
         SSL_CTX_set1_cert_store(ssl_ctx.get(), *_creds);
 
         if (_creds->get_priority_string() != "") {
-            if (SSL_CTX_set_cipher_list(ssl_ctx.get(), _creds->get_priority_string().c_str()) != 1) {
-                throw ossl_error("Failed to set priority list");
-            }
+            // if (SSL_CTX_set_cipher_list(ssl_ctx.get(), _creds->get_priority_string().c_str()) != 1) {
+            //     throw ossl_error("Failed to set priority list");
+            // }
         }
         return ssl_ctx;
     }
