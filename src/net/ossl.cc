@@ -1215,7 +1215,8 @@ private:
             return pull_encrypted_and_send().then([this]{
                 return wait_for_input().then([this]{
                     if (eof()) {
-                        return make_exception_future<>(std::runtime_error("EOF observed during handshake"));
+                        _error = std::make_exception_ptr(std::system_error(ENOTCONN, std::system_category()));
+                        return make_exception_future<>(_error);
                     }
                     return make_ready_future<>();
                 });
@@ -1226,7 +1227,8 @@ private:
     future<> server_handshake() {
         return wait_for_input().then([this]{
             if (eof()) {
-                return make_exception_future<>(std::runtime_error("EOF observed during handshake"));
+                _error = std::make_exception_ptr(std::system_error(ENOTCONN, std::system_category()));
+                return make_exception_future<>(_error);
             }
             return do_handshake(SSL_accept, std::bind(&session::pull_encrypted_and_send, this));
         });
