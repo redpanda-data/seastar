@@ -17,50 +17,81 @@
  */
 /*
  * Copyright 2015 Cloudius Systems
+ * Copyright 2024 Redpanda Data
  */
 
 #ifdef SEASTAR_MODULE
 module;
 #endif
 
-#include <system_error>
-
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
-#include <openssl/x509_vfy.h>
+#include <fmt/ranges.h>
+#include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/provider.h>
 #include <openssl/safestack.h>
-#include <openssl/bio.h>
-#include <openssl/evp.h>
-#include <openssl/pkcs12.h>
-#include <openssl/pem.h>
 #include <openssl/ssl.h>
-#include <openssl/bio.h>
+#include <openssl/sslerr.h>
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/x509v3.h>
+
+#include <system_error>
 
 #ifdef SEASTAR_MODULE
 module seastar;
 #else
 #include "net/tls-impl.hh"
-#include <seastar/net/tls.hh>
-#include <seastar/core/sstring.hh>
-#include <seastar/net/stack.hh>
+
 #include <seastar/core/gate.hh>
+#include <seastar/core/sstring.hh>
 #include <seastar/core/with_timeout.hh>
-#include <seastar/util/later.hh>
+#include <seastar/net/stack.hh>
+#include <seastar/net/tls.hh>
 #include <seastar/util/defer.hh>
+#include <seastar/util/later.hh>
+#include <seastar/util/log.hh>
 #endif
+
+namespace seastar {
+
+enum class ossl_errc : int{};
+
+}
+
+namespace std {
+
+template<>
+struct is_error_code_enum<seastar::ossl_errc> : true_type {};
+
+}
+
+template<>
+struct fmt::formatter<seastar::ossl_errc> : public fmt::formatter<std::string_view> {
+    auto format(seastar::ossl_errc error, fmt::format_context& ctx) const -> decltype(ctx.out()) {
+        constexpr size_t error_buf_size = 256;
+        // Buffer passed to ERR_error_string must be at least 256 bytes large
+        // https://www.openssl.org/docs/man3.0/man3/ERR_error_string_n.html
+        std::array<char, error_buf_size> buf{};
+        ERR_error_string_n(
+          static_cast<unsigned long>(error), buf.data(), buf.size());
+        // ERR_error_string_n does include the terminating null character
+        return fmt::format_to(ctx.out(), "{}", buf.data());
+    }
+};
 
 namespace seastar {
 
 class ossl_error_category : public std::error_category {
 public:
     constexpr ossl_error_category() noexcept : std::error_category{} {}
-    const char * name() const noexcept override {
+    const char* name() const noexcept override {
         return "OpenSSL";
     }
-    std::string message(int) const override {
-        return "";
+    std::string message(int error) const override {
+        return fmt::format("{}", static_cast<ossl_errc>(error));
     }
 };
 
@@ -69,45 +100,74 @@ const std::error_category& tls::error_category() {
     return ec;
 }
 
-class ossl_error : public std::runtime_error {
+std::error_code make_error_code(ossl_errc e) {
+    return std::error_code(static_cast<int>(e), tls::error_category());
+}
+
+class ossl_error : public std::system_error {
 public:
-    explicit ossl_error(const sstring& msg)
-      : std::runtime_error{format("{}: {}", msg, build_error())} {}
+    static ossl_error make_ossl_error(const sstring& msg) {
+        auto error_codes = build_error_codes();
+        auto formatted_msg = fmt::format(
+          "{}: {}", msg, error_codes);
+
+        if (error_codes.empty()) {
+            return ossl_error(std::move(formatted_msg));
+        } else {
+            return ossl_error(std::move(formatted_msg), std::move(error_codes));
+        }
+    }
+
+    const std::vector<ossl_errc>& get_ossl_error_codes() const {
+        return _ossl_error_codes;
+    }
 
 private:
-    static sstring build_error(){
-        sstring msg = "{";
-        std::array<char, 256> buf{};
-        for (auto code = ERR_get_error(); code != 0; code = ERR_get_error()) {
-            ERR_error_string_n(code, buf.data(), buf.size());
-            msg += fmt::format("{{{}: {}}}", code, buf.data());
-        }
-        msg += "}";
+    explicit ossl_error(std::string msg)
+        // Use a generic operation failed error if there are no errors
+        // in the SSL error stack
+      : std::system_error(ERR_PACK(ERR_LIB_USER, 0, ERR_R_OPERATION_FAIL),
+            tls::error_category(), std::move(msg)) {}
+    ossl_error(std::string msg, std::vector<ossl_errc> error_codes)
+      : std::system_error(
+        static_cast<int>(error_codes.front()),
+        tls::error_category(),
+        std::move(msg))
+      , _ossl_error_codes(std::move(error_codes)) {}
 
-        return msg;
+    static std::vector<ossl_errc> build_error_codes() {
+        std::vector<ossl_errc> error_codes;
+        for (auto code = ERR_get_error(); code != 0; code = ERR_get_error()) {
+            error_codes.push_back(static_cast<ossl_errc>(code));
+        }
+
+        return error_codes;
     }
+
+private:
+    std::vector<ossl_errc> _ossl_error_codes;
 };
 
 template<typename T>
 sstring asn1_str_to_str(T* asn1) {
     const auto len = ASN1_STRING_length(asn1);
-    return sstring((char*)ASN1_STRING_get0_data(asn1), len);
+    return sstring(reinterpret_cast<const char*>(ASN1_STRING_get0_data(asn1)), len);
 };
 
-static cert_info::bytes extract_x509_serial(X509* cert) {
+static std::vector<std::byte> extract_x509_serial(X509* cert) {
     constexpr size_t serial_max = 160;
     const ASN1_INTEGER *serial_no = X509_get_serialNumber(cert);
     const size_t serial_size = std::min(serial_max, (size_t)serial_no->length);
-    cert_info::bytes serial(cert_info::bytes::initialized_later{}, serial_size);
-    std::memcpy(serial.begin(), reinterpret_cast<cert_info::bytes::value_type*>(serial_no->data), serial_size);
+    std::vector<std::byte> serial(
+        reinterpret_cast<std::byte*>(serial_no->data),
+        reinterpret_cast<std::byte*>(serial_no->data + serial_size));
     return serial;
 }
 
 static time_t extract_x509_expiry(X509* cert) {
-    ASN1_TIME *not_after = X509_get_notAfter(cert);
-    if (not_after) {
-        struct tm tm_struct;
-        memset(&tm_struct, 0, sizeof(struct tm));
+    const ASN1_TIME *not_after = X509_get0_notAfter(cert);
+    if (not_after != nullptr) {
+        tm tm_struct{};
         ASN1_TIME_to_tm(not_after, &tm_struct);
         return mktime(&tm_struct);
     }
@@ -143,7 +203,6 @@ using x509_store_ptr = ssl_handle<X509_STORE, X509_STORE_free>;
 using x509_store_ctx_ptr = ssl_handle<X509_STORE_CTX, X509_STORE_CTX_free>;
 using x509_chain_ptr = ssl_handle<STACK_OF(X509), X509_pop_free>;
 using x509_infos_ptr = ssl_handle<STACK_OF(X509_INFO), X509_INFO_pop_free>;
-using x509_extension_ptr = ssl_handle<X509_EXTENSION, X509_EXTENSION_free>;
 using general_names_ptr = ssl_handle<GENERAL_NAMES, GENERAL_NAME_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
 using ssl_ctx_ptr = ssl_handle<SSL_CTX, SSL_CTX_free>;
@@ -153,12 +212,12 @@ using ssl_ptr = ssl_handle<SSL, SSL_free>;
 ///
 class tls::dh_params::impl {
 public:
-    impl(level) {}
+    explicit impl(level) {}
     impl(const blob&, x509_crt_format){}
 
-    EVP_PKEY* get() const { return _pkey.get(); }
+    const EVP_PKEY* get() const { return _pkey.get(); }
 
-    operator EVP_PKEY*() const { return _pkey.get(); }
+    explicit operator const EVP_PKEY*() const { return _pkey.get(); }
 
 private:
     evp_pkey_ptr _pkey;
@@ -172,8 +231,7 @@ tls::dh_params::dh_params(const blob& b, x509_crt_format fmt)
 }
 
 // TODO(rob) some small amount of code duplication here
-tls::dh_params::~dh_params() {
-}
+tls::dh_params::~dh_params() = default;
 
 tls::dh_params::dh_params(dh_params&&) noexcept = default;
 tls::dh_params& tls::dh_params::operator=(dh_params&&) noexcept = default;
@@ -230,7 +288,7 @@ public:
         auto infos = x509_infos_ptr(PEM_X509_INFO_read_bio(cert_bio.get(), nullptr, nullptr, nullptr));
         auto num_elements = sk_X509_INFO_num(infos.get());
         if (num_elements <= 0) {
-            throw ossl_error("Failed to parse PEM cert");
+            throw ossl_error::make_ossl_error("Failed to parse PEM cert");
         }
         for (auto i=0; i < num_elements; i++) {
             auto object = sk_X509_INFO_value(infos.get(), i);
@@ -250,7 +308,7 @@ public:
             break;
         }
         if (!cert) {
-            throw ossl_error("Failed to parse x509 certificate");
+            throw ossl_error::make_ossl_error("Failed to parse x509 certificate");
         }
         return cert;
     }
@@ -262,7 +320,7 @@ public:
         case tls::x509_crt_format::PEM:
             iterate_pem_certs(cert_bio, [this](X509_INFO* info){
                 if (!info->x509) {
-                    throw ossl_error("Failed to parse x509 cert");
+                    throw ossl_error::make_ossl_error("Failed to parse x509 cert");
                 }
                 X509_STORE_add_cert(*this, info->x509);
             });
@@ -270,7 +328,7 @@ public:
         case tls::x509_crt_format::DER:
             cert = x509_ptr(d2i_X509_bio(cert_bio.get(), nullptr));
             if (!cert) {
-                throw ossl_error("Failed to parse x509 certificate");
+                throw ossl_error::make_ossl_error("Failed to parse x509 certificate");
             }
             X509_STORE_add_cert(*this, cert.get());
             break;
@@ -284,7 +342,7 @@ public:
         case x509_crt_format::PEM:
             iterate_pem_certs(cert_bio, [this](X509_INFO* info) {
                 if (!info->crl) {
-                    throw ossl_error("Failed to parse CRL");
+                    throw ossl_error::make_ossl_error("Failed to parse CRL");
                 }
                 X509_STORE_add_crl(*this, info->crl);
             });
@@ -292,7 +350,7 @@ public:
         case x509_crt_format::DER:
             crl = x509_crl_ptr(d2i_X509_CRL_bio(cert_bio.get(), nullptr));
             if (!crl) {
-                throw ossl_error("Failed to parse x509 crl");
+                throw ossl_error::make_ossl_error("Failed to parse x509 crl");
             }
             X509_STORE_add_crl(*this, crl.get());
             break;
@@ -314,13 +372,11 @@ public:
             __builtin_unreachable();
         }
         if (!pkey) {
-            throw ossl_error("Error attempting to parse private key");
+            throw ossl_error::make_ossl_error("Error attempting to parse private key");
         }
-#if 0 // https://github.com/redpanda-data/core-internal/issues/1233
-        if (!X509_verify(x509_cert.get(), pkey.get())) {
-            throw ossl_error("Failed to verify cert/key pair");
+        if (!X509_check_private_key(x509_cert.get(), pkey.get())) {
+            throw ossl_error::make_ossl_error("Failed to verify cert/key pair");
         }
-#endif
         _cert_and_key = certkey_pair{.cert = std::move(x509_cert), .key = std::move(pkey)};
     }
 
@@ -333,16 +389,14 @@ public:
             X509 *cert = nullptr;
             STACK_OF(X509) *ca = nullptr;
             if (!PKCS12_parse(p12.get(), password.c_str(), &pkey, &cert, &ca)) {
-                throw ossl_error("Failed to extract cert key pair from pkcs12 file");
+                throw ossl_error::make_ossl_error("Failed to extract cert key pair from pkcs12 file");
             }
-#if 0 // https://github.com/redpanda-data/core-internal/issues/1233
             // Ensure signature validation checks pass before continuing
-            if (!X509_verify(cert, pkey)) {
+            if (!X509_check_private_key(cert, pkey)) {
                 X509_free(cert);
                 EVP_PKEY_free(pkey);
-                throw ossl_error("Failed to verify cert/key pair");
+                throw ossl_error::make_ossl_error("Failed to verify cert/key pair");
             }
-#endif
             _cert_and_key = certkey_pair{.cert = x509_ptr(cert), .key = evp_pkey_ptr(pkey)};
 
             // Iterate through all elements in the certificate chain, adding them to the store
@@ -358,7 +412,7 @@ public:
                 }
             }
         } else {
-            throw ossl_error("Failed to parse pkcs12 file");
+            throw ossl_error::make_ossl_error("Failed to parse pkcs12 file");
         }
     }
 
@@ -543,10 +597,9 @@ void tls::server_credentials::set_client_auth(client_auth ca) {
 }
 
 namespace tls {
-
 /**
- * Session wraps gnutls session, and is the
- * actual conduit for an TLS/SSL data flow.
+ * Session wraps an OpenSSL SSL session and context,
+ * and is the actual conduit for an TLS/SSL data flow.
  *
  * We use a connected_socket and its sink/source
  * for IO. Note that we need to keep ownership
@@ -557,32 +610,46 @@ namespace tls {
  */
 class session : public enable_shared_from_this<session>, public session_impl {
 public:
-    typedef temporary_buffer<char> buf_type;
-    typedef net::fragment* frag_iter;
+    using buf_type = temporary_buffer<char>;
+    using frag_iter = net::fragment*;
 
     session(session_type t, shared_ptr<tls::certificate_credentials> creds,
             std::unique_ptr<net::connected_socket_impl> sock, tls_options options = {})
-            : _type(t), _sock(std::move(sock)), _creds(creds->_impl),
-                   _in(_sock->source()), _out(_sock->sink()),
-                   _in_sem(1), _out_sem(1),  _options(options),
-                   _in_bio(BIO_new(BIO_s_mem())) , _out_bio(BIO_new(BIO_s_mem())),
-                   _ctx(make_ssl_context()),
-                   _ssl(SSL_new(_ctx.get())) {
-        if (!_ssl){
-            BIO_free(_in_bio);
-            BIO_free(_out_bio);
-            throw ossl_error("Failed to initialize ssl object");
+      : _sock(std::move(sock))
+      , _creds(creds->_impl)
+      , _in(_sock->source())
+      , _out(_sock->sink())
+      , _in_sem(1)
+      , _out_sem(1)
+      , _options(std::move(options))
+      , _output_pending(make_ready_future<>())
+      , _ctx(make_ssl_context(t))
+      , _ssl([this]() {
+          auto ssl = SSL_new(_ctx.get());
+          if (!ssl) {
+              throw ossl_error::make_ossl_error("Failed to create SSL session");
+          }
+          return ssl;
+      }())
+      , _type(t) {
+        bio_ptr in_bio(BIO_new(BIO_s_mem()));
+        bio_ptr out_bio(BIO_new(BIO_s_mem()));
+        if (!in_bio || !out_bio) {
+            throw std::runtime_error("Failed to create BIOs");
         }
-        if (t == session_type::SERVER) {
+        // SSL_set_bio transfers ownership of the read and write bios to the SSL
+        // instance
+        SSL_set_bio(_ssl.get(), in_bio.release(), out_bio.release());
+
+        if (_type == session_type::SERVER) {
             SSL_set_accept_state(_ssl.get());
         } else {
-            if (!_options.server_name.empty()){
-                SSL_set_tlsext_host_name(_ssl.get(), _options.server_name.c_str());
+            if (!_options.server_name.empty()) {
+                SSL_set_tlsext_host_name(
+                  _ssl.get(), _options.server_name.c_str());
             }
             SSL_set_connect_state(_ssl.get());
         }
-        // SSL_set_bio transfers ownership of the read and write bios to the SSL instance
-        SSL_set_bio(_ssl.get(), _in_bio, _out_bio);
     }
 
     session(session_type t, shared_ptr<certificate_credentials> creds,
@@ -590,81 +657,190 @@ public:
             tls_options options = {})
             : session(t, std::move(creds), net::get_impl::get(std::move(sock)), options) {}
 
-    // This method pulls encrypted data from the SSL context and writes
-    // it to the underlying socket.
-    future<> pull_encrypted_and_send(){
-        auto msg = make_lw_shared<scattered_message<char>>();
-        return do_until(
-            [this] { return BIO_ctrl_pending(_out_bio) == 0; },
-            [this, msg]{
-                // TODO(rob) avoid magic numbers
-                buf_type buf(4096);
-                auto n = BIO_read(_out_bio, buf.get_write(), buf.size());
-                if (n > 0){
-                    buf.trim(n);
-                    msg->append(std::move(buf));
-                } else if (!BIO_should_retry(_out_bio)) {
-                    _error = std::make_exception_ptr(ossl_error("Failed to read data from the BIO"));
-                    return make_exception_future<>(_error);
+    ~session() {
+        assert(_output_pending.available());
+    }
+
+    // This function waits for the _output_pending future to resolve
+    // If an error occurs, it is saved off into _error and returned
+    future<> wait_for_output() {
+        return std::exchange(_output_pending, make_ready_future())
+          .handle_exception([this](auto ep) {
+              _error = ep;
+              return make_exception_future(ep);
+          });
+    }
+
+    // This function will attempt to read data out of the OpenSSL out_bio()
+    // which the SSL session writes to.  If any data is present, it will
+    // push it into the _out stream and save off the future into `_output_pending`.
+    // If there is data waiting to be sent, this function will wait for
+    // `_output_pending` to resolve.
+    future<> perform_push() {
+        return _output_pending.then([this] {
+            return repeat_until_value(
+                [this, msg = scattered_message<char>()] () mutable {
+                    using ret_t = std::optional<scattered_message<char>>;
+                    buf_type buf(BIO_ctrl_pending(out_bio()));
+                    auto n = BIO_read(
+                        out_bio(), buf.get_write(), buf.size());
+                    if (n > 0) {
+                        buf.trim(n);
+                        msg.append(std::move(buf));
+                    } else if (!BIO_should_retry(out_bio())) {
+                        _error = std::make_exception_ptr(
+                            ossl_error::make_ossl_error(
+                                "Failed to read from out_bio()"));
+                        return make_exception_future<ret_t>(_error);
+                    }
+                    if (BIO_ctrl_pending(out_bio()) == 0) {
+                        return make_ready_future<ret_t>(std::move(msg));
+                    }
+                    return make_ready_future<ret_t>();
                 }
-                return make_ready_future<>();
-        }).then([this, msg](){
-            if(msg->size() > 0){
-                return _out.put(std::move(*msg).release());
-            }
-            return make_ready_future<>();
+            ).then([this](scattered_message<char> msg) mutable {
+                if (msg.size() > 0) {
+                    _output_pending = _out.put(std::move(msg).release());
+                } else {
+                    _output_pending = make_ready_future();
+                }
+            });
         });
     }
 
-    // This method puts unencrypted data is written into the SSL context.
-    // This data is later able to be retrieved in its encrypted form by reading
-    // from the associated _out_bio
-    future<> do_put(frag_iter i, frag_iter e) {
-        return do_for_each(i, e, [this](net::fragment& f){
-            auto ptr = f.base;
-            auto size = f.size;
-            size_t off = 0;
-            // SSL_write isn't guaranteed to write entire fragments at a time
-            // continue to write until all is consumed by openssl
-            return repeat([this, ptr, size, off]() mutable {
-                if(off == size) {
-                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+    // This function will check to see if there is any data sitting in the
+    // out_bio(), which is the BIO that the SSL session writes to to send
+    // data.  If there is, it call `perform_push` and wait for the data
+    // to be sent.  If there is no data to be sent, this function returns
+    // immediately.
+    // Returns true if data is sent, false if not
+    future<bool> maybe_perform_push_with_wait() {
+        if (BIO_ctrl_pending(out_bio()) > 0) {
+            return perform_push().then([this] {
+                return wait_for_output();
+            }).then([]() {
+                return true;
+            });
+        } else {
+            return make_ready_future<bool>(false);
+        }
+    }
+
+    // Helper function for handling the SSL errors in do_put
+    future<stop_iteration> handle_do_put_ssl_err(const int ssl_err) {
+        switch(ssl_err) {
+        case SSL_ERROR_ZERO_RETURN:
+            // Indicates a hang up somewhere
+            // Mark _eof and stop iteratio
+            _eof = true;
+            return make_ready_future<stop_iteration>(stop_iteration::yes);
+        case SSL_ERROR_NONE:
+            // Should not have been reached in this situation
+            // Continue iteration
+            return make_ready_future<stop_iteration>(stop_iteration::no);
+        case SSL_ERROR_SYSCALL:
+            _error = std::make_exception_ptr(std::system_error(errno, std::system_category(), "System error encountered during SSL write"));
+            return make_exception_future<stop_iteration>(_error);
+        case SSL_ERROR_SSL: {
+            auto ec = ERR_GET_REASON(ERR_peek_error());
+            if (ec == SSL_R_UNEXPECTED_EOF_WHILE_READING) {
+                // Probably shouldn't have during a write, but
+                // let's handle this gracefully
+                _eof = true;
+                return make_ready_future<stop_iteration>(stop_iteration::yes);
+            }
+            _error = make_exception_ptr(ossl_error::make_ossl_error(
+                "Error occurred during SSL write"));
+            // let's make sure there's no data to actually send
+            return wait_for_output().then_wrapped([this](auto f) {
+                try {
+                    f.get();
+                    return make_exception_future(_error);
+                } catch(...) {
+                    std::throw_with_nested(ossl_error::make_ossl_error(
+                        "Encountered unexpected error while handling SSL error during SSL write"));
                 }
-                auto bytes_written = SSL_write(_ssl.get(), ptr + off, size - off);
-                if(bytes_written <= 0){
-                    const auto ec = SSL_get_error(_ssl.get(), bytes_written);
-                    if (ec == SSL_ERROR_WANT_WRITE) {
-                        return pull_encrypted_and_send().then([]{
-                            return stop_iteration::no;
-                        });
-                    } else if (ec == SSL_ERROR_WANT_READ) {
-                        return do_get().then([](auto){
-                            return stop_iteration::no;
+            }).then([] {
+                return stop_iteration::no;
+            });
+        }
+        default:
+            // Some other unhandled situation
+            _error = std::make_exception_ptr(std::runtime_error(
+                "Unknown error encountered during SSL write"));
+            return make_exception_future<stop_iteration>(_error);
+        }
+    }
+
+    // Called post locking of the _out_sem
+    // This function takes and holds the sempahore units for _out_sem and
+    // will attempt to send the provided packet.  If a renegotiation is needed
+    // any unprocessed part of the packet is returned.
+    future<net::packet> do_put(net::packet p, semaphore_units<> units) {
+        if (!connected()) {
+            return make_ready_future<net::packet>(std::move(p));
+        }
+        assert(_output_pending.available());
+        return do_with(std::move(p), std::move(units), false,
+            [this](net::packet& p, semaphore_units<>& units, bool& renegotiate) {
+                // This do_until runs until either a renegotiation occurs or the packet is empty
+                return do_until(
+                    [this, &p, &renegotiate] { return eof() || renegotiate || p.len() == 0;},
+                    [this, &p, &renegotiate]() mutable {
+                        std::string_view frag_view =
+                            {p.fragments().begin()->base, p.fragments().begin()->size};
+                        return repeat([this, frag_view, &renegotiate, &p]() mutable {
+                            if (frag_view.empty()) {
+                                return make_ready_future<stop_iteration>(stop_iteration::yes);
+                            }
+                            size_t bytes_written = 0;
+                            auto write_rc = SSL_write_ex(
+                                _ssl.get(), frag_view.data(), frag_view.size(), &bytes_written);
+                            if (write_rc != 1) {
+                                const auto ssl_err = SSL_get_error(_ssl.get(), write_rc);
+                                if (!connected()
+                                    || ssl_err == SSL_ERROR_WANT_READ
+                                    || ssl_err == SSL_ERROR_WANT_WRITE) {
+                                    // These 'error' codes indicate to the caller that before we can
+                                    // continue writing data to the SSL session, the SSL session needs
+                                    // to send or receive data from the peer.  Could indicate a
+                                    // renegotiation is required.
+                                    renegotiate = true;
+                                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+                                }
+                                return handle_do_put_ssl_err(ssl_err);
+                            } else {
+                                frag_view.remove_prefix(bytes_written);
+                                p.trim_front(bytes_written);
+                                return perform_push().then([this] {
+                                    return wait_for_output().then([] {
+                                        return stop_iteration::no;
+                                    });
+                                });
+                            }
                         });
                     }
-                    _error = std::make_exception_ptr(ossl_error("Failed on call to SSL_write"));
-                    return make_exception_future<stop_iteration>(_error);
-                }
-                off += bytes_written;
-                /// Regardless of error, continue to send fragments
-                return pull_encrypted_and_send().then([]{
-                    return make_ready_future<stop_iteration>(stop_iteration::no);
+                ).then([&p] {
+                    return std::move(p);
                 });
-            });
-        });
+            }
+        );
     }
 
+    // Used to push unencrypted data through OpenSSL, which will
+    // encrypt it and then place it into the output bio.
     future<> put(net::packet p) override {
+        constexpr size_t openssl_max_record_size = 16 * 1024;
         if (_error) {
-            return make_exception_future<>(_error);
+            return make_exception_future(_error);
         }
         if (_shutdown) {
-            return make_exception_future<>(std::system_error(EPIPE, std::system_category()));
+            return make_exception_future<>(
+              std::system_error(EPIPE, std::system_category()));
         }
         if (!connected()) {
-            return handshake().then([this, p = std::move(p)]() mutable {
-               return put(std::move(p));
-            });
+            return handshake().then(
+              [this, p = std::move(p)]() mutable { return put(std::move(p)); });
         }
 
         // We want to make sure that we write to the underlying bio with as large
@@ -673,166 +849,288 @@ public:
         // encryption/decryption faster. Hence to avoid cases where we would do
         // an extra syscall for something like a 100 bytes header we linearize the
         // packet if it's below the max TLS record size.
-        // TODO(Rob): Avoid magic numbers
-        if (p.nr_frags() > 1 && p.len() <= 16000) {
+        if (p.nr_frags() > 1 && p.len() <= openssl_max_record_size) {
             p.linearize();
         }
-
-        auto i = p.fragments().begin();
-        auto e = p.fragments().end();
-        return with_semaphore(_out_sem, 1, std::bind(&session::do_put, this, i, e)).finally([p = std::move(p)] {});
+        return get_units(_out_sem, 1).then([this, p = std::move(p)](auto units) mutable {
+            return do_put(std::move(p), std::move(units)).then([this](net::packet p) {
+                if (eof() || p.len() == 0) {
+                    // we have closed early, drop the packet and return
+                    return make_ready_future();
+                } else {
+                    return handshake().then([this, p = std::move(p)]() mutable {
+                        return put(std::move(p));
+                    });
+                }
+            });
+        });
     }
 
-    template<typename session_func, typename want_read_func>
-    future<> do_handshake(session_func session_fn, want_read_func want_read_fn) {
-        auto n = session_fn(_ssl.get());
-        auto ssl_err = SSL_get_error(_ssl.get(), n);
-        switch (ssl_err) {
-        case SSL_ERROR_NONE:
-            break;
-        case SSL_ERROR_WANT_READ:
-            return want_read_fn();
-        case SSL_ERROR_WANT_WRITE:
-            return wait_for_input();
-        case SSL_ERROR_SSL:
-        {
-            // Catch-all for handshake errors
-            auto ec = ERR_GET_REASON(ERR_get_error());
-            switch (ec) {
-            case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
-            case SSL_R_CERTIFICATE_VERIFY_FAILED:
-            case SSL_R_NO_CERTIFICATES_RETURNED:
-                verify(); // should throw
-                [[fallthrough]];
-            default:
-                _error = std::make_exception_ptr(ossl_error("Failed to establish SSL handshake"));
-                return make_exception_future<>(_error);
-            }
+    // Called after locking the _in_sem and _out_sem semaphores.
+    // This function will walk through the handshake with a remote peer
+    // If EOF is encountered, ENOTCONN is thrown
+    future<> do_handshake() {
+        if (eof()) {
+            // if we have experienced and eof, set the error and return
+            // GnuTLS will probably return GNUTLS_E_PREMATURE_TERMINATION
+            // from gnutls_handshake in this situation.
+            _error = std::make_exception_ptr(std::system_error(
+              ENOTCONN,
+              std::system_category(),
+              "EOF encountered during handshake"));
+            return make_exception_future(_error);
+        } else if (connected()) {
+            return make_ready_future<>();
         }
-        default:
-            _error = std::make_exception_ptr(ossl_error("Unhandled error code observed"));
-            return make_exception_future<>(_error);
+        try {
+            // Same function for clients or servers, however clients
+            // will be sending data first
+            auto n = SSL_do_handshake(_ssl.get());
+            if (n <= 0) {
+                auto ssl_error = SSL_get_error(_ssl.get(), n);
+                switch (ssl_error) {
+                case SSL_ERROR_NONE:
+                    // probably shouldn't have gotten here, but we're gtg
+                    break;
+                case SSL_ERROR_ZERO_RETURN:
+                    // peer has closed
+                    _eof = true;
+                    break;
+                case SSL_ERROR_WANT_WRITE:
+                case SSL_ERROR_WANT_READ: {
+                    // Always first check to see if there's any data to send.  Then wait
+                    // for data to be received.
+                    return maybe_perform_push_with_wait().then([this](bool) {
+                        return perform_pull().then(
+                          [this] { return do_handshake(); });
+                    });
+                    break;
+                }
+                case SSL_ERROR_SYSCALL:
+                    _error = std::make_exception_ptr(std::system_error(
+                        errno, std::system_category(), "System error during handshake"));
+                    return make_exception_future(_error);
+                case SSL_ERROR_SSL:
+                    // oh boy an error!
+                    {
+                        auto ec = ERR_GET_REASON(ERR_peek_error());
+                        switch (ec) {
+                        case SSL_R_UNEXPECTED_EOF_WHILE_READING:
+                            // well in this situation, the remote end closed
+                            _eof = true;
+                            return make_ready_future<>();
+                        case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
+                        case SSL_R_CERTIFICATE_VERIFY_FAILED:
+                        case SSL_R_NO_CERTIFICATES_RETURNED:
+                            verify();
+                            // may throw, otherwise fall through
+                            [[fallthrough]];
+                        default:
+                            if (_error == nullptr) {
+                                _error = std::make_exception_ptr(
+                                  ossl_error::make_ossl_error(
+                                    "Failed to establish SSL handshake"));
+                            }
+                            return wait_for_output().then_wrapped(
+                              [this](auto f) {
+                                  try {
+                                      f.get();
+                                      return make_exception_future(_error);
+                                  } catch (...) {
+                                      std::throw_with_nested(
+                                        ossl_error::make_ossl_error("Error"));
+                                  }
+                              });
+                        }
+                    }
+                    break;
+                default:
+                    // weird situation of unknown error
+                    _error = std::make_exception_ptr(std::runtime_error(
+                      "Unknown error encountered during handshake"));
+                    return make_exception_future(_error);
+                }
+            } else {
+                if (_type == session_type::CLIENT
+                    || _creds->get_client_auth() != client_auth::NONE) {
+                    verify();
+                }
+                return maybe_perform_push_with_wait().then([](bool){
+                    return make_ready_future();
+                });
+            }
+        } catch (...) {
+            return make_exception_future<>(std::current_exception());
         }
         return make_ready_future<>();
     }
 
+    // This function will attempt to pull data off of the _in stream
+    // if there isn't already data needing to be processed first.
     future<> wait_for_input() {
-        if (eof()) {
-            return make_ready_future<>();
+        // If we already have data, then it needs to be processed
+        if (!_input.empty()) {
+            return make_ready_future();
         }
-        return _in.get().then([this](buf_type data) {
-            if (data.empty()) {
-                _eof = true;
-                return make_ready_future<>();
-            }
-            // Write the received data to the "read bio".  This bio is consumed
-            // by the SSL struct.  Think of this of writing encrypted data into
-            // the SSL session
-            auto buf = make_lw_shared<buf_type>(std::move(data));
-            return do_until(
-              [buf]{ return buf->empty(); },
-              [this, buf]{
-                  const auto n = BIO_write(_in_bio, buf->get(), buf->size());
-                  if (n <= 0) {
-                      _error = std::make_exception_ptr(ossl_error("Error while waiting for input"));
-                      return make_exception_future<>(_error);
-                  }
-                  buf->trim_front(n);
-                  return make_ready_future();
-              }).finally([buf]{});
-        });
+        return _in.get()
+          .then([this](buf_type buf) {
+              // Set EOF if it's empty
+              _eof |= buf.empty();
+              _input = std::move(buf);
+          })
+          .handle_exception([this](auto ep) {
+              _error = ep;
+              return make_exception_future(ep);
+          });
     }
 
+    // Called after locking the _in_sem semaphore
+    // This function attempts to pull unencrypted data off of the
+    // SSL session using SSL_read.  If ther eis no data, then
+    // we will call perform_pull and wait for data to arrive.
     future<buf_type> do_get() {
-        // Check if there is encrypted data sitting in ssls internal buffers, otherwise wait
-        // for data and use a
+        // Data is available to be pulled of the SSL session if there is pending
+        // data on the SSL session or there is data in the in_bio() which SSL reads
+        // from
+        auto data_to_pull = (BIO_ctrl_pending(in_bio()) + SSL_pending(_ssl.get())) > 0;
         auto f = make_ready_future<>();
-        auto avail = BIO_ctrl_pending(_in_bio) + SSL_pending(_ssl.get());
-        if (avail == 0) {
-            f = wait_for_input();
+        if (!data_to_pull) {
+            // If nothing is in the SSL buffers then we may have to wait for
+            // data to come in
+            f = perform_pull();
         }
-        return f.then([this]() {
-            if (eof() && SSL_pending(_ssl.get()) == 0) {
-                return make_ready_future<buf_type>(buf_type());
+        return f.then([this] {
+            if (eof()) {
+                return make_ready_future<buf_type>();
             }
-            const auto buf_size = 4096;
-            buf_type buf(buf_size);
-            // Read decrypted data from ssls internal buffers
-            auto bytes_read = SSL_read(_ssl.get(), buf.get_write(), buf_size);
-            if (bytes_read <= 0) {
-                const auto ec = SSL_get_error(_ssl.get(), bytes_read);
-                if (ec == SSL_ERROR_ZERO_RETURN) {
-                    // Client has initiated shutdown by sending EOF
+            auto avail = BIO_ctrl_pending(in_bio()) + SSL_pending(_ssl.get());
+            buf_type buf(avail);
+            size_t bytes_read = 0;
+            auto read_result = SSL_read_ex(
+              _ssl.get(), buf.get_write(), avail, &bytes_read);
+            if (read_result != 1) {
+                const auto ssl_err = SSL_get_error(_ssl.get(), read_result);
+                switch (ssl_err) {
+                case SSL_ERROR_ZERO_RETURN:
+                    // Remote end has closed
                     _eof = true;
-                    close();
-                    return make_ready_future<buf_type>(buf_type());
-                } else if (ec == SSL_ERROR_WANT_READ) {
-                    // Not enough data resides in the internal SSL buffers to merit a read, i.e.
-                    // maybe a record doesn't exist in its entirety, therefore read more from input.
-                    return do_get();
-                } else if (ec == SSL_ERROR_WANT_WRITE) {
-                    // In the case TLS renegotiation needs to be performed and the buffers are full
-                    // SSL_read returns this error code
-                    return pull_encrypted_and_send().then([this]{ return do_get(); });
+                    [[fallthrough]];
+                case SSL_ERROR_NONE:
+                    // well we shouldn't be here at all
+                    return make_ready_future<buf_type>();
+                case SSL_ERROR_WANT_READ:
+                case SSL_ERROR_WANT_WRITE:
+                    // This may be caused by a renegotiation request, in this situation
+                    // return an empty buffer (the get() function will initiate a handshake)
+                    return make_ready_future<buf_type>();
+                case SSL_ERROR_SYSCALL:
+                    // check to see if errno is 0, which may indicate some sort of shutdown
+                    if (errno == 0) {
+                        return make_ready_future<buf_type>();
+                    }
+                    _error = std::make_exception_ptr(std::system_error(
+                    errno, std::system_category(), "System error during SSL read"));
+                    return make_exception_future<buf_type>(_error);
+                case SSL_ERROR_SSL:
+                    {
+                        auto ec = ERR_GET_REASON(ERR_peek_error());
+                        if (ec == SSL_R_UNEXPECTED_EOF_WHILE_READING) {
+                            // in this situation, the remote end hung up
+                            _eof = true;
+                            return make_ready_future<buf_type>();
+                        }
+                        _error = std::make_exception_ptr(
+                          ossl_error::make_ossl_error(
+                            "Failure during processing SSL read"));
+                        return make_exception_future<buf_type>(_error);
+                    }
+                default:
+                    _error = std::make_exception_ptr(std::runtime_error(
+                      "Unexpected error condition during SSL read"));
+                    return make_exception_future<buf_type>(_error);
                 }
-                _error = std::make_exception_ptr(ossl_error(fmt::format("Error upon call to SSL_read: {}", ec)));
-                return make_exception_future<buf_type>(_error);
+            } else {
+                buf.trim(bytes_read);
+                return make_ready_future<buf_type>(std::move(buf));
             }
-            buf.trim(bytes_read);
-            return make_ready_future<buf_type>(std::move(buf));
         });
     }
 
+    // Called by user applications to pull data off of the TLS session
     future<buf_type> get() override {
         if (_error) {
-            return make_exception_future<temporary_buffer<char>>(_error);
+            return make_exception_future<buf_type>(_error);
         }
         if (_shutdown || eof()) {
-            return make_ready_future<temporary_buffer<char>>(buf_type());
+            return make_ready_future<buf_type>(buf_type());
         }
         if (!connected()) {
             return handshake().then(std::bind(&session::get, this));
         }
-        return with_semaphore(_in_sem, 1, std::bind(&session::do_get, this)).then([](temporary_buffer<char> buf) {
-            // TODO(rob) - maybe re-handshake?
-            return make_ready_future<temporary_buffer<char>>(std::move(buf));
-        });
+        return with_semaphore(_in_sem, 1, std::bind(&session::do_get, this))
+          .then([this](buf_type buf) {
+              if (buf.empty() && !eof()) {
+                  return handshake().then(std::bind(&session::get, this));
+              }
+              return make_ready_future<buf_type>(std::move(buf));
+          });
     }
 
+    // Performs shutdown
     future<> do_shutdown() {
-        if(_error || !connected() || eof()) {
+        if (_error || !connected()) {
             return make_ready_future();
         }
-        auto res = SSL_shutdown(_ssl.get());
-        if (res == 1){
-            // Shutdown has completed successfully
-            return make_ready_future<>();
-        } else if (res == 0) {
-            // Shutdown process is ongoing and has not yet completed, peer has not yet replied
-            // 0 does not indicate error, calling SSL_get_error is undefined
-            return yield().then([this]{
-                return do_shutdown();
-            });
-        }
-        // Shutdown was not successful, calling SSL_get_error will indicate why
-        auto err = SSL_get_error(_ssl.get(), res);
-        if (err == SSL_ERROR_WANT_READ) {
-            auto f = make_ready_future();
-            if (_type == session_type::CLIENT) {
-                // Clients will be sending the close_notify message, and expecting SSL_ERROR_ZERO_RETURN
-                // from the server, logic in wait_for_input will detect this and set _eof to true
-                f = pull_encrypted_and_send();
-            }
-            return f.then([this]{
-                return wait_for_input().then([this] {
-                    return do_shutdown();
-                });
-            });
-        }
 
-        // Fatal error
-        _error = std::make_exception_ptr(ossl_error("fatal error during ssl shutdown"));
-        return make_exception_future<>(_error);
+        auto res = SSL_shutdown(_ssl.get());
+        if (res == 1) {
+            return make_ready_future();
+        } else if (res == 0) {
+            return yield().then([this] { return do_shutdown(); });
+        } else {
+            auto ssl_err = SSL_get_error(_ssl.get(), res);
+            switch (ssl_err) {
+            case SSL_ERROR_NONE:
+                // this is weird, yield and try again
+                return yield().then([this] { return do_shutdown(); });
+            case SSL_ERROR_ZERO_RETURN:
+                // Looks like the other end is done, so let's just assume we're
+                // done as well
+                return make_ready_future();
+            case SSL_ERROR_WANT_READ:
+            case SSL_ERROR_WANT_WRITE:
+                return maybe_perform_push_with_wait().then([this](bool sent_data) {
+                    // In neither case do we actually want to pull data off of the socket (yet)
+                    // If we initiate the shutdown, then we just send the shutdown alert and wait
+                    // for EOF (outside of this function)
+                    if (sent_data) {
+                        return do_shutdown();
+                    } else {
+                        return make_ready_future();
+                    }
+                });
+            case SSL_ERROR_SYSCALL:
+                _error = std::make_exception_ptr(std::system_error(
+                    errno, std::system_category(), "System error during shutdown"));
+                return make_exception_future(_error);
+            case SSL_ERROR_SSL:
+                _error = std::make_exception_ptr(ossl_error::make_ossl_error(
+                  "Error occurred during SSL shutdown"));
+                return wait_for_output().then_wrapped([this](auto f) {
+                    try {
+                        f.get();
+                        return make_exception_future(_error);
+                    } catch (...) {
+                        std::throw_with_nested(
+                          ossl_error::make_ossl_error("Error"));
+                    }
+                });
+            default:
+                _error = std::make_exception_ptr(std::runtime_error(
+                  "Unknown error occurred during SSL shutdown"));
+                return make_exception_future(_error);
+            }
+        }
     }
 
     void verify() {
@@ -840,21 +1138,28 @@ public:
         // must be explicitly queried via SSL_get_peer_certificate
         auto res = SSL_get_verify_result(_ssl.get());
         if (res != X509_V_OK) {
-            sstring stat_str(X509_verify_cert_error_string(res));
+            auto stat_str(X509_verify_cert_error_string(res));
             auto dn = extract_dn_information();
             if (dn) {
-                std::stringstream ss;
-                ss << stat_str;
-                if (stat_str.back() != ' ') {
-                    ss << ' ';
+                std::string_view stat_str_view{stat_str};
+                if (stat_str_view.ends_with(" ")) {
+                    stat_str_view.remove_suffix(1);
                 }
-                ss << "(Issuer=[" << dn->issuer << "], Subject=[" << dn->subject << "])";
-                stat_str = ss.str();
+                throw verification_error(fmt::format(
+                    R"|({} (Issuer=["{}"], Subject=["{}"]))|",
+                    stat_str_view,
+                    dn->issuer,
+                    dn->subject));
             }
             throw verification_error(stat_str);
         } else if (SSL_get0_peer_certificate(_ssl.get()) == nullptr) {
-            if (_type == session_type::SERVER && _creds->get_client_auth() == client_auth::REQUIRE) {
-                throw verification_error("no certificate presented");
+            // If a peer certificate was not presented,
+            // SSL_get_verify_result will return X509_V_OK:
+            // https://www.openssl.org/docs/man3.0/man3/SSL_get_verify_result.html
+            if (
+              _type == session_type::SERVER
+              && _creds->get_client_auth() == client_auth::REQUIRE) {
+                throw verification_error("no certificate presented by peer");
             }
             return;
         }
@@ -862,7 +1167,8 @@ public:
         if (_creds->_dn_callback) {
             auto dn = extract_dn_information();
             assert(dn.has_value());
-            _creds->_dn_callback(_type, std::move(dn->subject), std::move(dn->issuer));
+            _creds->_dn_callback(
+              _type, std::move(dn->subject), std::move(dn->issuer));
         }
     }
 
@@ -874,56 +1180,37 @@ public:
         return SSL_is_init_finished(_ssl.get());
     }
 
-    // Identical (or almost) portion of implementation
-    //
+    // This function waits for eof() to occur on the input stream
+    // Unless wait_for_eof_on_shutdown is false
     future<> wait_for_eof() {
         if (!_options.wait_for_eof_on_shutdown) {
+            // Seastar option to allow users to just bypass EOF waiting
             return make_ready_future();
         }
-
-        // read records until we get an eof alert
-        // since this call could time out, we must not ac
         return with_semaphore(_in_sem, 1, [this] {
             if (_error || !connected()) {
                 return make_ready_future();
             }
-            return repeat([this] {
-                if (eof()) {
-                    return make_ready_future<stop_iteration>(stop_iteration::yes);
-                }
-                return do_get().then([](auto) {
-                   return make_ready_future<stop_iteration>(stop_iteration::no);
-                });
-            });
+            return do_until(
+                [this] { return eof(); },
+                [this] { return do_get().discard_result(); });
         });
     }
 
-
+    // This function is called to kick off the handshake.  It will obtain
+    // locks on the _in_sem and _out_sem semaphores and start the handshake.
     future<> handshake() {
         if (_creds->need_load_system_trust()) {
             if (!SSL_CTX_set_default_verify_paths(_ctx.get())) {
-                throw ossl_error("Couldn't load system trust");
+                throw ossl_error::make_ossl_error(
+                  "Could not load system trust");
             }
             _creds->set_load_system_trust(false);
         }
 
-        // acquire both semaphores to sync both read & write
         return with_semaphore(_in_sem, 1, [this] {
             return with_semaphore(_out_sem, 1, [this] {
-                if (connected()) {
-                    return make_ready_future<>();
-                }
-                auto fn = (_type == session_type::SERVER) ?
-                        std::bind(&session::server_handshake, this) :
-                        std::bind(&session::client_handshake, this);
-                return do_until(
-                    [this]{ return connected(); },
-                    [fn = std::move(fn)]{ return fn(); }
-                ).then([this]{
-                    if (_type == session_type::CLIENT || _creds->get_client_auth() != client_auth::NONE) {
-                        verify();
-                    }
-                }).handle_exception([this](auto ep) {
+                return do_handshake().handle_exception([this](auto ep) {
                     if (!_error) {
                         _error = ep;
                     }
@@ -941,49 +1228,45 @@ public:
         // we only send a simple "bye" alert packet. Then we
         // read from input until we see EOF. Any other reader
         // before us will get it instead of us, and mark _eof = true
-        // in which case we will be no-op.
+        // in which case we will be no-op. This is performed all
+        // within do_shutdown
         return with_semaphore(_out_sem, 1,
-                        std::bind(&session::do_shutdown, this)).then(
-                        std::bind(&session::wait_for_eof, this)).finally([me = shared_from_this()] {});
+                              std::bind(&session::do_shutdown, this)).then(
+                              std::bind(&session::wait_for_eof, this)).finally([me = shared_from_this()] {});
         // note moved finally clause above. It is theorethically possible
         // that we could complete do_shutdown just before the close calls
         // below, get pre-empted, have "close()" finish, get freed, and
         // then call wait_for_eof on stale pointer.
     }
+
     void close() noexcept override {
         // only do once.
         if (!std::exchange(_shutdown, true)) {
-            auto me = shared_from_this();
             // running in background. try to bye-handshake us nicely, but after 10s we forcefully close.
-            (void)with_timeout(timer<>::clock::now() + std::chrono::seconds(10), shutdown()).finally([this] {
-                _eof = true;
-                try {
-                    (void)_in.close().handle_exception([](std::exception_ptr) {}); // should wake any waiters
-                } catch (...) {
-                }
-                try {
-                    (void)_out.close().handle_exception([](std::exception_ptr) {});
-                } catch (...) {
-                }
-                // make sure to wait for handshake attempt to leave semaphores. Must be in same order as
-                // handshake aqcuire, because in worst case, we get here while a reader is attempting
-                // re-handshake.
-                return with_semaphore(_in_sem, 1, [this] {
-                    return with_semaphore(_out_sem, 1, [] {});
-                });
-            }).then_wrapped([me = std::move(me)](future<> f) { // must keep object alive until here.
-                f.ignore_ready_future();
-            });
+            (void)with_timeout(
+              timer<>::clock::now() + std::chrono::seconds(10), shutdown())
+              .finally([this] {
+                  _eof = true;
+                  return _in.close();
+              }).finally([this] {
+                  return _out.close();
+              }).finally([this] {
+                  // make sure to wait for handshake attempt to leave semaphores. Must be in same order as
+                  // handshake aqcuire, because in worst case, we get here while a reader is attempting
+                  // re-handshake.
+                  return with_semaphore(_in_sem, 1, [this] {
+                      return with_semaphore(_out_sem, 1, [] { });
+                  });
+              }).handle_exception([me = shared_from_this()](std::exception_ptr){
+              }).discard_result();
         }
     }
     // helper for sink
     future<> flush() noexcept override {
-        return with_semaphore(_out_sem, 1, [this] {
-            return _out.flush();
-        });
+        return with_semaphore(_out_sem, 1, [this] { return _out.flush(); });
     }
 
-    seastar::net::connected_socket_impl & socket() const override {
+    seastar::net::connected_socket_impl& socket() const override {
         return *_sock;
     }
 
@@ -993,29 +1276,31 @@ public:
             return make_exception_future<result_t>(_error);
         }
         if (_shutdown) {
-            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
+            return make_exception_future<result_t>(
+              std::system_error(ENOTCONN, std::system_category()));
         }
         if (!connected()) {
-            return handshake().then([this]() mutable {
-               return get_distinguished_name();
-            });
+            return handshake().then(
+              [this]() mutable { return get_distinguished_name(); });
         }
         result_t dn = extract_dn_information();
         return make_ready_future<result_t>(std::move(dn));
     }
 
-    future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type> types) override {
+    future<std::vector<subject_alt_name>> get_alt_name_information(
+      std::unordered_set<subject_alt_name_type> types) override {
         using result_t = std::vector<subject_alt_name>;
 
         if (_error) {
             return make_exception_future<result_t>(_error);
         }
         if (_shutdown) {
-            return make_exception_future<result_t>(std::system_error(ENOTCONN, std::system_category()));
+            return make_exception_future<result_t>(
+              std::system_error(ENOTCONN, std::system_category()));
         }
         if (!connected()) {
             return handshake().then([this, types = std::move(types)]() mutable {
-               return get_alt_name_information(std::move(types));
+                return get_alt_name_information(std::move(types));
             });
         }
 
@@ -1023,21 +1308,23 @@ public:
         if (!peer_cert) {
             return make_ready_future<result_t>();
         }
-        return make_ready_future<result_t>(do_get_alt_name_information(peer_cert, types));
+        return make_ready_future<result_t>(
+          do_get_alt_name_information(peer_cert, types));
     }
 
 private:
     std::vector<subject_alt_name> do_get_alt_name_information(const x509_ptr &peer_cert,
                                                               const std::unordered_set<subject_alt_name_type> &types) const {
-        int ext_idx = X509_get_ext_by_NID(peer_cert.get(), NID_subject_alt_name, -1);
+        int ext_idx = X509_get_ext_by_NID(
+          peer_cert.get(), NID_subject_alt_name, -1);
         if (ext_idx < 0) {
             return {};
         }
-        auto ext = x509_extension_ptr(X509_get_ext(peer_cert.get(), ext_idx));
+        auto ext = X509_get_ext(peer_cert.get(), ext_idx);
         if (!ext) {
             return {};
         }
-        auto names = general_names_ptr((GENERAL_NAMES*)X509V3_EXT_d2i(ext.get()));
+        auto names = general_names_ptr(static_cast<GENERAL_NAMES*>(X509V3_EXT_d2i(ext)));
         if (!names) {
             return {};
         }
@@ -1046,7 +1333,7 @@ private:
         alt_names.reserve(num_names);
 
         for (auto i = 0; i < num_names; i++) {
-            GENERAL_NAME *name = sk_GENERAL_NAME_value(names.get(), i);
+            GENERAL_NAME* name = sk_GENERAL_NAME_value(names.get(), i);
             if (auto known_t = field_to_san_type(name)) {
                 if (types.empty() || types.count(known_t->type)) {
                     alt_names.push_back(std::move(*known_t));
@@ -1104,7 +1391,7 @@ private:
             case GEN_DIRNAME:
             {
                 san.type = subject_alt_name_type::dn;
-                auto dirname = get_ossl_string(name->d.directoryName);
+                auto dirname = get_dn_string(name->d.directoryName);
                 if (!dirname) {
                     throw std::runtime_error("Expected non null value for SAN dirname");
                 }
@@ -1126,111 +1413,138 @@ private:
         if (!peer_cert) {
             return std::nullopt;
         }
-        auto subject = get_ossl_string(X509_get_subject_name(peer_cert.get()));
-        auto issuer = get_ossl_string(X509_get_issuer_name(peer_cert.get()));
-        if(!subject || !issuer) {
-            throw ossl_error("error while extracting certificate DN strings");
+        auto subject = get_dn_string(X509_get_subject_name(peer_cert.get()));
+        auto issuer = get_dn_string(X509_get_issuer_name(peer_cert.get()));
+        if (!subject || !issuer) {
+            throw ossl_error::make_ossl_error(
+              "error while extracting certificate DN strings");
         }
-        return session_dn{.subject= std::move(*subject), .issuer = std::move(*issuer)};
+        return session_dn{
+          .subject = std::move(*subject), .issuer = std::move(*issuer)};
     }
 
-    ssl_ctx_ptr make_ssl_context(){
+    ssl_ctx_ptr make_ssl_context(session_type type) {
         auto ssl_ctx = ssl_ctx_ptr(SSL_CTX_new(TLS_method()));
         if (!ssl_ctx) {
-            throw ossl_error("Failed to initialize SSL context");
+            throw ossl_error::make_ossl_error(
+              "Failed to initialize SSL context");
         }
-
         const auto& ck_pair = _creds->get_certkey_pair();
-        if (_type == session_type::SERVER) {
+        if (type == session_type::SERVER) {
             if (!ck_pair) {
-                throw ossl_error("Cannot start session without cert/key pair for server");
+                throw ossl_error::make_ossl_error(
+                  "Cannot start session without cert/key pair for server");
             }
-            switch(_creds->get_client_auth()) {
-                case client_auth::NONE:
-                default:
-                    SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_NONE, nullptr);
-                    break;
-                case client_auth::REQUEST:
-                    SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_PEER, nullptr);
-                    break;
-                case client_auth::REQUIRE:
-                    SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
-                    break;
+            switch (_creds->get_client_auth()) {
+            case client_auth::NONE:
+            default:
+                SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_NONE, nullptr);
+                break;
+            case client_auth::REQUEST:
+                SSL_CTX_set_verify(ssl_ctx.get(), SSL_VERIFY_PEER, nullptr);
+                break;
+            case client_auth::REQUIRE:
+                SSL_CTX_set_verify(
+                  ssl_ctx.get(),
+                  SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                  nullptr);
+                break;
             }
+
+            SSL_CTX_set_options(
+              ssl_ctx.get(), SSL_OP_ALL | SSL_OP_ALLOW_CLIENT_RENEGOTIATION);
         }
 
-        // Servers must supply both certificate and key, clients may optionally use these
+        // Servers must supply both certificate and key, clients may
+        // optionally use these
         if (ck_pair) {
-            if (!SSL_CTX_use_cert_and_key(ssl_ctx.get(), ck_pair.cert.get(), ck_pair.key.get(), nullptr, 1)) {
-                throw ossl_error("Failed to load cert/key pair");
+            if (!SSL_CTX_use_cert_and_key(
+                  ssl_ctx.get(),
+                  ck_pair.cert.get(),
+                  ck_pair.key.get(),
+                  nullptr,
+                  1)) {
+                throw ossl_error::make_ossl_error(
+                  "Failed to load cert/key pair");
             }
         }
-        // Increments the reference count of *_creds, now should have a total ref count of two, will be deallocated
-        // when both OpenSSL and the certificate_manager call X509_STORE_free
+        // Increments the reference count of *_creds, now should have a
+        // total ref count of two, will be deallocated when both OpenSSL and
+        // the certificate_manager call X509_STORE_free
         SSL_CTX_set1_cert_store(ssl_ctx.get(), *_creds);
 
         if (_creds->get_priority_string() != "") {
-            if (SSL_CTX_set_cipher_list(ssl_ctx.get(), _creds->get_priority_string().c_str()) != 1) {
-                throw ossl_error("Failed to set priority list");
+            if (SSL_CTX_set_cipher_list(ssl_ctx.get(),
+            _creds->get_priority_string().c_str()) != 1) {
+                throw ossl_error::make_ossl_error("Failed to set priority list");
             }
         }
         return ssl_ctx;
     }
 
-    static std::optional<sstring> get_ossl_string(X509_NAME* name){
-        if (auto name_str = X509_NAME_oneline(name, nullptr, 0)) {
-            // sstring constructor may throw, to ensure deallocation of this OpenSSL string in
-            // all cases, wrap the call to free() in a deferred_action
-            auto done = defer([&name_str]() noexcept { OPENSSL_free(name_str); });
-            sstring ossl_str(name_str);
-            return ossl_str;
+    static std::optional<sstring> get_dn_string(X509_NAME* name) {
+        auto out = bio_ptr(BIO_new(BIO_s_mem()));
+        if (-1 == X509_NAME_print_ex(out.get(), name, 0, ASN1_STRFLGS_RFC2253 | XN_FLAG_SEP_COMMA_PLUS |
+                                     XN_FLAG_FN_SN | XN_FLAG_DUMP_UNKNOWN_FIELDS)) {
+            return std::nullopt;
         }
-        return std::nullopt;
+        char* bio_ptr = nullptr;
+        auto len = BIO_get_mem_data(out.get(), &bio_ptr);
+        if (len < 0) {
+            throw ossl_error::make_ossl_error("Failed to allocate DN string");
+        }
+        return sstring(bio_ptr, len);
     }
 
-    future<> client_handshake() {
-        return do_handshake(SSL_connect, [this]{
-            return pull_encrypted_and_send().then([this]{
-                return wait_for_input().then([this]{
-                    if (eof()) {
-                        return make_exception_future<>(std::runtime_error("EOF observed during handshake"));
-                    }
-                    return make_ready_future<>();
-                });
-            });
-        });
-    }
-
-    future<> server_handshake() {
-        return wait_for_input().then([this]{
-            if (eof()) {
-                return make_exception_future<>(std::runtime_error("EOF observed during handshake"));
+    // This function is used put data into the in_bio().  It will
+    // for data to be available on the _input buffer and then
+    // write it to the BIO
+    future<> perform_pull() {
+        return wait_for_input().then([this] {
+            if (eof() || _input.empty()) {
+                _eof = true;
+                return make_ready_future<>();
             }
-            return do_handshake(SSL_accept, std::bind(&session::pull_encrypted_and_send, this));
+            return do_until(
+              [this] { return _input.empty(); },
+              [this] {
+                  const auto n = BIO_write(
+                    in_bio(), _input.get(), _input.size());
+                  if (n <= 0) {
+                      _error = std::make_exception_ptr(
+                        ossl_error::make_ossl_error(
+                          "Error while inserting into in_bio()"));
+                      return make_exception_future(_error);
+                  }
+                  _input.trim_front(n);
+                  return make_ready_future();
+              });
         });
     }
+
+    size_t in_avail() const { return _input.size(); }
+
+    BIO* in_bio() { return SSL_get_rbio(_ssl.get()); }
+    BIO* out_bio() { return SSL_get_wbio(_ssl.get()); }
 
 private:
-    session_type _type;
-
     std::unique_ptr<net::connected_socket_impl> _sock;
     shared_ptr<tls::certificate_credentials::impl> _creds;
     data_source _in;
     data_sink _out;
     std::exception_ptr _error;
 
-    bool _eof = false;
-    // bool _maybe_load_system_trust = false;
-    semaphore _in_sem, _out_sem;
+    semaphore _in_sem;
+    semaphore _out_sem;
     tls_options _options;
 
-    bool _shutdown = false;
+    future<> _output_pending;
     buf_type _input;
-    gate _read_gate;
-    BIO* _in_bio;
-    BIO* _out_bio;
     ssl_ctx_ptr _ctx;
     ssl_ptr _ssl;
+    session_type _type;
+    bool _eof = false;
+    bool _shutdown = false;
 };
 } // namespace tls
 
@@ -1253,15 +1567,39 @@ future<connected_socket> tls::wrap_server(shared_ptr<server_credentials> cred, c
 
 } // namespace seastar
 
-// TODO(rob) fix
-const int seastar::tls::ERROR_UNKNOWN_COMPRESSION_ALGORITHM = 0;
-const int seastar::tls::ERROR_UNKNOWN_CIPHER_TYPE = 1;
-const int seastar::tls::ERROR_INVALID_SESSION = 2;
-const int seastar::tls::ERROR_UNEXPECTED_HANDSHAKE_PACKET = 3;
-const int seastar::tls::ERROR_UNKNOWN_CIPHER_SUITE = 4;
-const int seastar::tls::ERROR_UNKNOWN_ALGORITHM = 5;
-const int seastar::tls::ERROR_UNSUPPORTED_SIGNATURE_ALGORITHM = 6;
-const int seastar::tls::ERROR_SAFE_RENEGOTIATION_FAILED = 7;
-const int seastar::tls::ERROR_UNSAFE_RENEGOTIATION_DENIED = 8;
-const int seastar::tls::ERROR_UNKNOWN_SRP_USERNAME = 9;
-const int seastar::tls::ERROR_PREMATURE_TERMINATION = 10;
+const int seastar::tls::ERROR_UNKNOWN_COMPRESSION_ALGORITHM = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNSUPPORTED_COMPRESSION_ALGORITHM);
+const int seastar::tls::ERROR_UNKNOWN_CIPHER_TYPE = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNKNOWN_CIPHER_TYPE);
+const int seastar::tls::ERROR_INVALID_SESSION = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_INVALID_SESSION_ID);
+const int seastar::tls::ERROR_UNEXPECTED_HANDSHAKE_PACKET = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNEXPECTED_RECORD);
+const int seastar::tls::ERROR_UNKNOWN_CIPHER_SUITE = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNSUPPORTED_PROTOCOL);
+const int seastar::tls::ERROR_UNKNOWN_ALGORITHM = ERR_PACK(
+  ERR_LIB_RSA, 0, RSA_R_UNKNOWN_ALGORITHM_TYPE);
+const int seastar::tls::ERROR_UNSUPPORTED_SIGNATURE_ALGORITHM = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_NO_SUITABLE_SIGNATURE_ALGORITHM);
+const int seastar::tls::ERROR_SAFE_RENEGOTIATION_FAILED = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_RENEGOTIATION_MISMATCH);
+const int seastar::tls::ERROR_UNSAFE_RENEGOTIATION_DENIED = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNSAFE_LEGACY_RENEGOTIATION_DISABLED);
+const int seastar::tls::ERROR_UNKNOWN_SRP_USERNAME = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_INVALID_SRP_USERNAME);
+const int seastar::tls::ERROR_PREMATURE_TERMINATION = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNEXPECTED_EOF_WHILE_READING);
+const int seastar::tls::ERROR_PUSH = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_BIO_NOT_SET);
+const int seastar::tls::ERROR_PULL = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_READ_BIO_NOT_SET);
+const int seastar::tls::ERROR_UNEXPECTED_PACKET = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNEXPECTED_MESSAGE);
+const int seastar::tls::ERROR_UNSUPPORTED_VERSION = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_UNSUPPORTED_SSL_VERSION);
+const int seastar::tls::ERROR_NO_CIPHER_SUITES = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_NO_CIPHERS_AVAILABLE);
+const int seastar::tls::ERROR_DECRYPTION_FAILED = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_DECRYPTION_FAILED);
+const int seastar::tls::ERROR_MAC_VERIFY_FAILED = ERR_PACK(
+  ERR_LIB_SSL, 0, SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC);

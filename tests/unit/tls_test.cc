@@ -1446,6 +1446,10 @@ SEASTAR_THREAD_TEST_CASE(test_dn_name_handling) {
         fout.get();
 
         auto dn = fdn.get();
+        BOOST_REQUIRE(dn.has_value());
+        BOOST_REQUIRE_EQUAL(dn->subject, fmt::format("C=GB,ST=London,L=London,O=Redpanda Data,OU=Core,CN={}", id));
+        BOOST_REQUIRE_EQUAL(dn->issuer, "C=GB,ST=London,L=London,O=Redpanda Data,OU=Core,CN=redpanda.com");
+
         auto client_id = fin.get();
 
         in.close().get();
