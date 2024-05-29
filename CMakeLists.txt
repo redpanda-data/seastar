@@ -781,7 +781,7 @@ add_library (seastar
   src/util/read_first_line.cc
   src/util/tmp_file.cc
   src/util/short_streams.cc
-  $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:src/websocket/server.cc>
+  src/websocket/server.cc
   )
 
 add_library (Seastar::seastar ALIAS seastar)
