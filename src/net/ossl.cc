@@ -845,13 +845,13 @@ public:
     // This function takes and holds the sempahore units for _out_sem and
     // will attempt to send the provided packet.  If a renegotiation is needed
     // any unprocessed part of the packet is returned.
-    future<net::packet> do_put(net::packet p, semaphore_units<> units) {
+    future<net::packet> do_put(net::packet p) {
         if (!connected()) {
             return make_ready_future<net::packet>(std::move(p));
         }
         assert(_output_pending.available());
-        return do_with(std::move(p), std::move(units), false,
-            [this](net::packet& p, semaphore_units<>& units, bool& renegotiate) {
+        return do_with(std::move(p), false,
+            [this](net::packet& p, bool& renegotiate) {
                 // This do_until runs until either a renegotiation occurs or the packet is empty
                 return do_until(
                     [this, &p, &renegotiate] { return eof() || renegotiate || p.len() == 0;},
@@ -921,17 +921,16 @@ public:
         if (p.nr_frags() > 1 && p.len() <= openssl_max_record_size) {
             p.linearize();
         }
-        return get_units(_out_sem, 1).then([this, p = std::move(p)](auto units) mutable {
-            return do_put(std::move(p), std::move(units)).then([this](net::packet p) {
-                if (eof() || p.len() == 0) {
-                    // we have closed early, drop the packet and return
-                    return make_ready_future();
-                } else {
-                    return handshake().then([this, p = std::move(p)]() mutable {
-                        return put(std::move(p));
-                    });
-                }
-            });
+        return with_semaphore(_out_sem, 1, [this, p = std::move(p)]() mutable {
+            return do_put(std::move(p));
+        }).then([this](net::packet p) {
+            if (eof() || p.len() == 0) {
+                return make_ready_future();
+            } else {
+                return handshake().then([this, p = std::move(p)]() mutable {
+                    return put(std::move(p));
+                });
+            }
         });
     }
 
