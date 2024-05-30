@@ -342,10 +342,8 @@ seastar_add_test (httpd
     httpd_test.cc
     loopback_socket.hh)
 
-if (NOT ${Seastar_WITH_OSSL})
 seastar_add_test (websocket
   SOURCES websocket_test.cc)
-endif()
 
 seastar_add_test (ipv6
   SOURCES ipv6_test.cc)
@@ -571,7 +569,7 @@ function(seastar_add_certgen name)
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
 
-  
+
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CERT}"
     COMMAND ${OPENSSL} x509 -req -in ${CERT_REQ} -CA ${CERT_CAROOT} -CAkey ${CERT_CAPRIVKEY} -CAcreateserial -out ${CERT_CERT} -days ${CERT_DAYS} -extensions req_ext -extfile ${CERT_NAME}.cfg
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"  "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}" "${CMAKE_CURRENT_BINARY_DIR}/${CERT_NAME}.cfg"

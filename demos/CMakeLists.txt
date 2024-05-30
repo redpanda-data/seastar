@@ -62,10 +62,8 @@ endif ()
 seastar_add_demo (hello-world
   SOURCES hello-world.cc)
 
-if (NOT ${Seastar_WITH_OSSL})
 seastar_add_demo (websocket
   SOURCES websocket_demo.cc)
-endif()
 
 seastar_add_demo (echo
   SOURCES echo_demo.cc)

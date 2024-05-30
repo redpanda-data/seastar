@@ -781,7 +781,7 @@ add_library (seastar
   src/util/read_first_line.cc
   src/util/tmp_file.cc
   src/util/short_streams.cc
-  $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:src/websocket/server.cc>
+  src/websocket/server.cc
   )
 
 add_library (Seastar::seastar ALIAS seastar)
@@ -839,10 +839,7 @@ target_link_libraries (seastar
     SourceLocation::source_location
   PRIVATE
     ${CMAKE_DL_LIBS}
-    # TODO(rob) - GnuTLS still a dependency until its last use (gnutls_hash_hd_t) in
-    # seastar/net/tcp.hh can be removed
-    # $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:GnuTLS::gnutls>
-    GnuTLS::gnutls
+    $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:GnuTLS::gnutls>
     $<$<BOOL:${Seastar_WITH_OSSL}>:OpenSSL::SSL>
     $<$<BOOL:${Seastar_WITH_OSSL}>:OpenSSL::Crypto>
     StdAtomic::atomic

@@ -45,7 +45,9 @@
 #include "loopback_socket.hh"
 #include "tmpdir.hh"
 
+#ifndef SEASTAR_WITH_TLS_OSSL
 #include <gnutls/gnutls.h>
+#endif
 
 #if 0
 
