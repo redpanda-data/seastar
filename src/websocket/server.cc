@@ -27,6 +27,7 @@
 #include <seastar/core/scattered_message.hh>
 #include <seastar/http/request.hh>
 
+
 namespace seastar::experimental::websocket {
 
 static sstring http_upgrade_reply_template =
