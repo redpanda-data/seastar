@@ -223,6 +223,7 @@ using general_names_ptr = ssl_handle<GENERAL_NAMES, GENERAL_NAME_pop_free>;
 using pkcs12 = ssl_handle<PKCS12, PKCS12_free>;
 using ssl_ctx_ptr = ssl_handle<SSL_CTX, SSL_CTX_free>;
 using ssl_ptr = ssl_handle<SSL, SSL_free>;
+using x509_verify_param_ptr = ssl_handle<X509_VERIFY_PARAM, X509_VERIFY_PARAM_free>;
 
 // sufficiently large enough to avoid collision with OpenSSL BIO controls
 #define BIO_C_SET_POINTER 1000
@@ -376,6 +377,8 @@ public:
             X509_STORE_add_crl(*this, crl.get());
             break;
         }
+
+        enable_crl_checking();
     }
 
     void set_x509_key(const blob& cert, const blob& key, x509_crt_format fmt) {
@@ -434,6 +437,23 @@ public:
             }
         } else {
             throw ossl_error::make_ossl_error("Failed to parse pkcs12 file");
+        }
+    }
+
+    void enable_crl_checking() {
+        if (!std::exchange(_crl_check_flag_set, true)) {
+            x509_verify_param_ptr x509_vfy(X509_VERIFY_PARAM_new());
+
+            if (1 != X509_VERIFY_PARAM_set_flags(
+                    x509_vfy.get(), X509_V_FLAG_CRL_CHECK)) {
+                throw ossl_error::make_ossl_error(
+                    "Failed to set X509_V_FLAG_CRL_CHECK flag");
+            }
+
+            if (1 != X509_STORE_set1_param(*this, x509_vfy.get())) {
+                throw ossl_error::make_ossl_error(
+                    "Failed to set verification parameters on X509 store");
+            }
         }
     }
 
@@ -554,6 +574,7 @@ private:
     bool _enable_server_precedence = false;
     std::optional<tls_version> _min_tls_version;
     std::optional<tls_version> _max_tls_version;
+    bool _crl_check_flag_set = false;
 };
 
 tls::certificate_credentials::certificate_credentials()
