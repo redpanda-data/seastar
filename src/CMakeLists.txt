@@ -65,8 +65,8 @@ target_sources (seastar-module
     net/packet.cc
     net/inet_address.cc
     net/socket_address.cc
-    $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:src/net/tls.cc>
-    $<$<BOOL:${Seastar_WITH_OSSL}>:src/net/ossl.cc>
+    $<$<NOT:$<BOOL:${Seastar_WITH_OSSL}>>:net/tls.cc>
+    $<$<BOOL:${Seastar_WITH_OSSL}>:net/ossl.cc>
     net/virtio.cc
     http/client.cc
     http/common.cc
