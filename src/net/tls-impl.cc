@@ -735,6 +735,8 @@ std::ostream& tls::operator<<(std::ostream& os, const tls_version & version) {
     case tls::tls_version::tlsv1_3:
         return os << "TLSv1.3";
     }
+
+    __builtin_unreachable();
 }
 
 std::ostream& tls::operator<<(std::ostream& os, subject_alt_name_type type) {
