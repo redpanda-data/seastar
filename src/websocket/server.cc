@@ -144,7 +144,7 @@ static std::string sha1_base64(std::string_view source) {
     auto free_evp_md_ptr = 
         defer([&]() noexcept  { EVP_MD_free(md_ptr); });
 
-    assert(hash_size == EVP_MD_get_size(md_ptr));
+    assert(hash_size == static_cast<unsigned int>(EVP_MD_get_size(md_ptr)));
 
     if (1 != EVP_Digest(source.data(), source.size(), hash, &hash_size, md_ptr, nullptr)) {
         throw websocket::exception("Failed to perform SHA-1 digest in OpenSSL");
