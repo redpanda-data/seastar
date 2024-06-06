@@ -2105,7 +2105,7 @@ tcp_seq tcp<InetTraits>::tcb::get_isn() {
     auto md_ptr = EVP_MD_fetch(nullptr, "SHA256", nullptr);
     assert(md_ptr);
     auto free_md_ptr = defer([&]() noexcept { EVP_MD_free(md_ptr); });
-    assert(hash_size == EVP_MD_get_size(md_ptr));
+    assert(hash_size == static_cast<unsigned int>(EVP_MD_get_size(md_ptr)));
     auto md_ctx = EVP_MD_CTX_new();
     assert(md_ctx);
     auto free_md_ctx = defer([&]() noexcept { EVP_MD_CTX_free(md_ctx); });
