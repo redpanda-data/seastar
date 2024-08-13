@@ -222,11 +222,9 @@ static std::ostream& operator<<(std::ostream& os, const seastar::metrics::impl::
     switch (v.type()) {
     case seastar::metrics::impl::data_type::GAUGE:
     case seastar::metrics::impl::data_type::REAL_COUNTER:
-        fmt::print(os, "{:.6f}", v.d());
-        break;
+        return os << v.d();
     case seastar::metrics::impl::data_type::COUNTER:
-        fmt::print(os, "{}", v.i());
-        break;
+        return os << v.i();
     case seastar::metrics::impl::data_type::HISTOGRAM:
     case seastar::metrics::impl::data_type::SUMMARY:
         break;
@@ -245,22 +243,6 @@ static void escape_and_write_label_value(std::ostream& s, std::string_view label
             case '\\': s << R"(\\)"; break;
             case '\"': s << R"(\")"; break;
             case '\n': s << R"(\n)"; break;
-            default:   s << c;
-        }
-    }
-}
-
-/*
- * Sanitizes the prometheus label value as per the line format rules and writes it out to the ostream:
- * > label_value can be any sequence of UTF-8 characters, but the backslash (\), double-quote ("), and
- * > line feed (\n) characters have to be escaped as \\, \", and \n, respectively.
- */
-static void escape_and_write_label_value(std::ostream& s, std::string_view label_value) {
-    for (char c : label_value) {
-        switch (c) {
-            case '\\': s << "\\\\"; break;
-            case '\"': s << "\\\""; break;
-            case '\n': s << "\\n"; break;
             default:   s << c;
         }
     }
