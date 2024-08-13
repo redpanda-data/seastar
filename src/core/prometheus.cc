@@ -250,6 +250,22 @@ static void escape_and_write_label_value(std::ostream& s, std::string_view label
     }
 }
 
+/*
+ * Sanitizes the prometheus label value as per the line format rules and writes it out to the ostream:
+ * > label_value can be any sequence of UTF-8 characters, but the backslash (\), double-quote ("), and
+ * > line feed (\n) characters have to be escaped as \\, \", and \n, respectively.
+ */
+static void escape_and_write_label_value(std::ostream& s, std::string_view label_value) {
+    for (char c : label_value) {
+        switch (c) {
+            case '\\': s << "\\\\"; break;
+            case '\"': s << "\\\""; break;
+            case '\n': s << "\\n"; break;
+            default:   s << c;
+        }
+    }
+}
+
 static void add_name(std::ostream& s, const sstring& name, const std::map<sstring, sstring>& labels, const config& ctx) {
     s << name << "{";
     const char* delimiter = "";
