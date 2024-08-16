@@ -21,6 +21,7 @@
 
 #include <fmt/core.h>
 #include <fmt/ostream.h>
+#include <fmt/core.h>
 #include <seastar/core/prometheus.hh>
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
@@ -222,9 +223,11 @@ static std::ostream& operator<<(std::ostream& os, const seastar::metrics::impl::
     switch (v.type()) {
     case seastar::metrics::impl::data_type::GAUGE:
     case seastar::metrics::impl::data_type::REAL_COUNTER:
-        return os << v.d();
+        fmt::print(os, "{:.6f}", v.d());
+        break;
     case seastar::metrics::impl::data_type::COUNTER:
-        return os << v.i();
+        fmt::print(os, "{}", v.i());
+        break;
     case seastar::metrics::impl::data_type::HISTOGRAM:
     case seastar::metrics::impl::data_type::SUMMARY:
         break;
