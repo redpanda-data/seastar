@@ -555,7 +555,7 @@ void write_summary(std::stringstream& s, const config& ctx, const sstring& name,
  */
 class metric_aggregate_by_labels {
     std::vector<std::string> _labels_to_aggregate_by;
-    std::unordered_map<std::map<sstring, sstring>, seastar::metrics::impl::metric_value> _values;
+    std::map<std::map<sstring, sstring>, seastar::metrics::impl::metric_value> _values;
 public:
     metric_aggregate_by_labels(std::vector<std::string> labels) : _labels_to_aggregate_by(std::move(labels)) {
     }
@@ -572,14 +572,14 @@ public:
         for (auto&& l : _labels_to_aggregate_by) {
             labels.erase(l);
         }
-        std::unordered_map<std::map<sstring, sstring>, seastar::metrics::impl::metric_value>::iterator i = _values.find(labels);
+        auto i = _values.find(labels);
         if ( i == _values.end()) {
             _values.emplace(std::move(labels), m);
         } else {
             i->second += m;
         }
     }
-    const std::unordered_map<std::map<sstring, sstring>, seastar::metrics::impl::metric_value>& get_values() const noexcept {
+    const auto& get_values() const noexcept {
         return _values;
     }
     bool empty() const noexcept {
