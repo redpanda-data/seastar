@@ -798,6 +798,7 @@ target_link_libraries (seastar
     lksctp-tools::lksctp-tools
     rt::rt
     yaml-cpp::yaml-cpp
+    unordered_dense::unordered_dense
     "$<BUILD_INTERFACE:Valgrind::valgrind>"
     Threads::Threads)
 
