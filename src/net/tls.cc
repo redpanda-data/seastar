@@ -1496,56 +1496,7 @@ future<connected_socket> tls::wrap_server(shared_ptr<server_credentials> cred, c
     return make_ready_future<connected_socket>(std::move(sock));
 }
 
-future<connected_socket> tls::wrap_server(shared_ptr<server_credentials> cred, connected_socket&& s) {
-    session::session_ref sess(make_lw_shared<session>(session::type::SERVER, std::move(cred), std::move(s)));
-    connected_socket sock(std::make_unique<tls_connected_socket_impl>(std::move(sess)));
-    return make_ready_future<connected_socket>(std::move(sock));
-}
 
-future<bool> tls::check_session_is_resumed(connected_socket& socket) {
-    return get_tls_socket(socket)->check_session_is_resumed();
-}
-
-future<tls::session_data> tls::get_session_resume_data(connected_socket& socket) {
-    return get_tls_socket(socket)->get_session_resume_data();
-}
-
-future<std::optional<sstring>> tls::get_selected_alpn_protocol(connected_socket& socket) {
-    return get_tls_socket(socket)->get_selected_alpn_protocol();
-}
-
-std::string_view tls::format_as(subject_alt_name_type type) {
-    switch (type) {
-        case subject_alt_name_type::dnsname:
-            return "DNS";
-        case subject_alt_name_type::rfc822name:
-            return "EMAIL";
-        case subject_alt_name_type::uri:
-            return "URI";
-        case subject_alt_name_type::ipaddress:
-            return "IP";
-        case subject_alt_name_type::othername:
-            return "OTHERNAME";
-        case subject_alt_name_type::dn:
-            return "DIRNAME";
-        default:
-            return "UNKNOWN";
-    }
-}
-
-std::ostream& tls::operator<<(std::ostream& os, subject_alt_name_type type) {
-    return os << format_as(type);
-}
-
-std::ostream& tls::operator<<(std::ostream& os, const subject_alt_name::value_type& v) {
-    fmt::print(os, "{}", v);
-    return os;
-}
-
-std::ostream& tls::operator<<(std::ostream& os, const subject_alt_name& a) {
-    fmt::print(os, "{}", a);
-    return os;
-}
 
 }
 
