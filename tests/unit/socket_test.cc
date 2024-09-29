@@ -336,4 +336,3 @@ SEASTAR_THREAD_TEST_CASE(socket_bufsize) {
     BOOST_CHECK_LT(send_default, 20'000'000);
     BOOST_CHECK_LT(recv_default, 20'000'000);
 }
-
