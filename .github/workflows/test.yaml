@@ -96,7 +96,7 @@ jobs:
             $MAYBE_CCACHE_OPT                                \
             ${{ inputs.options }}                            \
             ${{ inputs.enables }}                            \
-            --crypto-provider ${{ inputs.crypto_provider }}
+            --ssl-provider ${{ inputs.crypto_provider }}
 
       - name: Build
         run: cmake --build build/${{inputs.mode}}
