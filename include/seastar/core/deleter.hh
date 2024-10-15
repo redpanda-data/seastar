@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <atomic>
 #ifndef SEASTAR_MODULE
 #include <cassert>
 #include <cstdint>
@@ -113,7 +114,7 @@ private:
 
 /// \cond internal
 struct deleter::impl {
-    unsigned refs = 1;
+    std::atomic_uint refs = 1;
     deleter next;
     impl(deleter next) : next(std::move(next)) {}
     virtual ~impl() {}
@@ -126,7 +127,7 @@ deleter::~deleter() {
         std::free(to_raw_object());
         return;
     }
-    if (_impl && --_impl->refs == 0) {
+    if (_impl && _impl->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         delete _impl;
     }
 }
@@ -209,7 +210,7 @@ deleter::share() {
     if (is_raw_object()) {
         _impl = new free_deleter_impl(to_raw_object());
     }
-    ++_impl->refs;
+    _impl->refs.fetch_add(1, std::memory_order_relaxed);
     return deleter(_impl);
 }
 
