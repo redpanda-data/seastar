@@ -33,6 +33,17 @@
 
 namespace seastar {
 
+struct deleter_stats {
+    size_t increments{0};
+    size_t decrements{0};
+    size_t loads{0};
+};
+
+inline deleter_stats& get_deleter_stats() {
+    static thread_local deleter_stats stats{};
+    return stats;
+}
+
 /// \addtogroup memory-module
 /// @{
 
@@ -127,7 +138,9 @@ deleter::~deleter() {
         std::free(to_raw_object());
         return;
     }
-    if (_impl && _impl->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    if (_impl && _impl->refs.fetch_sub(1, std::memory_order_release) == 1) {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        get_deleter_stats().decrements++;
         delete _impl;
     }
 }
@@ -211,6 +224,7 @@ deleter::share() {
         _impl = new free_deleter_impl(to_raw_object());
     }
     _impl->refs.fetch_add(1, std::memory_order_relaxed);
+    get_deleter_stats().increments++;
     return deleter(_impl);
 }
 
@@ -232,8 +246,9 @@ void deleter::append(deleter d) {
             next_d->_impl = next_impl = new free_deleter_impl(to_raw_object(next_impl));
         }
 
-        if (next_impl->refs != 1) {
+        if (next_impl->refs.load(std::memory_order_acquire) != 1) {
             next_d->_impl = next_impl = make_object_deleter_impl(deleter(next_impl), std::move(d));
+            get_deleter_stats().loads++;
             return;
         }
 
