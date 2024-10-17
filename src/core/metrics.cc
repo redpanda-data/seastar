@@ -685,7 +685,7 @@ int default_handle() {
 
 }
 
-const bool metric_disabled = false;
+const bool metric_disabled = true;
 
 relabel_config::relabel_action relabel_config_action(const std::string& action) {
     if (action == "skip_when_empty") {

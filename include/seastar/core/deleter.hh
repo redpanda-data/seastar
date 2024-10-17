@@ -138,8 +138,7 @@ deleter::~deleter() {
         std::free(to_raw_object());
         return;
     }
-    if (_impl && _impl->refs.fetch_sub(1, std::memory_order_release) == 1) {
-        std::atomic_thread_fence(std::memory_order_acquire);
+    if (_impl && _impl->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         get_deleter_stats().decrements++;
         delete _impl;
     }
@@ -246,7 +245,7 @@ void deleter::append(deleter d) {
             next_d->_impl = next_impl = new free_deleter_impl(to_raw_object(next_impl));
         }
 
-        if (next_impl->refs.load(std::memory_order_acquire) != 1) {
+        if (next_impl->refs != 1) {
             next_d->_impl = next_impl = make_object_deleter_impl(deleter(next_impl), std::move(d));
             get_deleter_stats().loads++;
             return;
