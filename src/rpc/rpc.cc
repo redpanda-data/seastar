@@ -90,7 +90,7 @@ namespace rpc {
           newbufs.reserve(orgbufs.size());
           deleter d = make_object_deleter(std::move(org));
           for (auto&& b : orgbufs) {
-              newbufs.emplace_back(b.get_write(), b.size(), d.share());
+              newbufs.push_back(temporary_buffer<char>(b.get_write(), b.size(), d.share()));
           }
           buf.bufs = std::move(newbufs);
       }
