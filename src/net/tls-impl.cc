@@ -537,7 +537,7 @@ public:
                 }
             }
         }
-        future<fsnotifier::watch_token> add_watch(const sstring& filename, fsnotifier::flags flags = fsnotifier::flags::close_write|fsnotifier::flags::delete_self) {
+        future<fsnotifier::watch_token> add_watch(const sstring& filename, fsnotifier::flags flags = fsnotifier::flags::close_write|fsnotifier::flags::delete_self|fsnotifier::flags::move_to) {
             return _fsn.create_watch(filename, flags).then([this, filename = filename](fsnotifier::watch w) {
                 auto t = w.token();
                 // we might create multiple watches for same token in case of dirs, avoid deleting previously
