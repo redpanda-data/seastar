@@ -42,6 +42,7 @@ namespace metrics {
 namespace impl {
 
 using labels_type = std::map<sstring, sstring>;
+using internalized_labels_type = std::shared_ptr<const labels_type>;
 
 int default_handle();
 
@@ -109,7 +110,7 @@ class metric_id {
 public:
     metric_id() = default;
     metric_id(group_name_type group, metric_name_type name,
-                    labels_type labels = {})
+                    internalized_labels_type labels)
                     : _group(std::move(group)), _name(
                                     std::move(name)), _labels(labels) {
     }
@@ -126,16 +127,19 @@ public:
         _group = name;
     }
     const instance_id_type & instance_id() const {
-        return _labels.at(shard_label.name());
+        return _labels->at(shard_label.name());
     }
     const metric_name_type & name() const {
         return _name;
     }
     const labels_type& labels() const {
+        return *_labels;
+    }
+    internalized_labels_type internalized_labels() const {
         return _labels;
     }
-    labels_type& labels() {
-        return _labels;
+    void update_labels(internalized_labels_type labels) {
+        _labels = labels;
     }
     sstring full_name() const;
 
@@ -147,7 +151,7 @@ private:
     }
     group_name_type _group;
     metric_name_type _name;
-    labels_type _labels;
+    internalized_labels_type _labels;
 };
 }
 }
@@ -194,13 +198,47 @@ struct metric_family_info {
  */
 struct metric_info {
     metric_id id;
-    labels_type original_labels;
+    internalized_labels_type original_labels;
     bool enabled;
     skip_when_empty should_skip_when_empty;
 };
 
 
 using metrics_registration = std::vector<metric_id>;
+class internalized_holder;
+using internalized_set = std::set<internalized_holder, std::less<>>;
+
+class internalized_holder {
+    internalized_labels_type _labels;
+public:
+    explicit internalized_holder(labels_type labels) : _labels(std::make_shared<labels_type>(std::move(labels))) {
+    }
+
+    explicit internalized_holder(internalized_labels_type labels) : _labels(std::move(labels)) {
+    }
+
+    internalized_labels_type labels() const {
+        return _labels;
+    }
+
+    const labels_type& labels_ref() const {
+        return *_labels;
+    }
+
+    size_t has_users() const {
+        return _labels.use_count() > 1;
+    }
+};
+
+inline bool operator<(const internalized_holder& lhs, const labels_type& rhs) {
+    return lhs.labels_ref() < rhs;
+}
+inline bool operator<(const labels_type& lhs, const internalized_holder& rhs) {
+    return lhs < rhs.labels_ref();
+}
+inline bool operator<(const internalized_holder& lhs, const internalized_holder& rhs) {
+    return lhs.labels_ref() < rhs.labels_ref();
+}
 
 class metric_groups_impl : public metric_groups_def {
     int _handle;
@@ -261,7 +299,7 @@ public:
 };
 
 using register_ref = shared_ptr<registered_metric>;
-using metric_instances = std::map<labels_type, register_ref>;
+using metric_instances = std::map<internalized_holder, register_ref, std::less<>>;
 
 class metric_family {
     metric_instances _instances;
@@ -281,12 +319,12 @@ public:
     metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
     }
 
-    register_ref& operator[](const labels_type& l) {
-        return _instances[l];
+    register_ref& operator[](const internalized_labels_type& l) {
+        return _instances[internalized_holder(l)];
     }
 
-    const register_ref& at(const labels_type& l) const {
-        return _instances.at(l);
+    const register_ref& at(const internalized_labels_type& l) const {
+        return _instances.at(internalized_holder(l));
     }
 
     metric_family_info& info() {
@@ -379,6 +417,7 @@ class impl {
     std::vector<relabel_config> _relabel_configs;
     std::vector<metric_family_config> _metric_family_configs;
     std::unordered_multimap<seastar::sstring, int> _metric_families_to_replicate;
+    internalized_set _internalized_labels;
 public:
     value_map& get_value_map() {
         return _value_map;
@@ -388,6 +427,7 @@ public:
         return _value_map;
     }
 
+    internalized_labels_type internalize_labels(labels_type labels);
     void add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels, int handle = default_handle());
     void update_aggregate_labels(const metric_id& id, const std::vector<label>& aggregate_labels);
     void remove_registration(const metric_id& id);
@@ -446,6 +486,7 @@ public:
             std::unordered_multimap<seastar::sstring, int> metric_families_to_replicate);
 
 private:
+    void gc_internalized_labels();
     void replicate_metric_family(const seastar::sstring& name,
                                  int destination_handle) const;
     void replicate_metric_if_required(const shared_ptr<registered_metric>& metric) const;
@@ -459,6 +500,7 @@ private:
     void remove_metric_replica(const metric_id& id,
                                const shared_ptr<impl>& destination) const;
     void remove_metric_replica_if_required(const metric_id& id) const;
+    bool apply_relabeling(const relabel_config& rc, metric_info& info);
 };
 
 const value_map& get_value_map(int handle = default_handle());
