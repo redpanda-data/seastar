@@ -203,8 +203,6 @@ struct metric_info {
     skip_when_empty should_skip_when_empty;
 };
 
-
-using metrics_registration = std::vector<metric_id>;
 class internalized_holder;
 using internalized_set = std::set<internalized_holder, std::less<>>;
 
@@ -240,19 +238,7 @@ inline bool operator<(const internalized_holder& lhs, const internalized_holder&
     return lhs.labels_ref() < rhs.labels_ref();
 }
 
-class metric_groups_impl : public metric_groups_def {
-    int _handle;
-    metrics_registration _registration;
-public:
-    explicit metric_groups_impl(int handle = default_handle());
-    ~metric_groups_impl();
-    metric_groups_impl(const metric_groups_impl&) = delete;
-    metric_groups_impl(metric_groups_impl&&) = default;
-    metric_groups_impl& add_metric(group_name_type name, const metric_definition& md);
-    metric_groups_impl& add_group(group_name_type name, const std::initializer_list<metric_definition>& l);
-    metric_groups_impl& add_group(group_name_type name, const std::vector<metric_definition>& l);
-    int get_handle() const;
-};
+
 
 class impl;
 using metric_implementations = std::unordered_map<int, ::seastar::shared_ptr<impl>>;
@@ -300,6 +286,21 @@ public:
 
 using register_ref = shared_ptr<registered_metric>;
 using metric_instances = std::map<internalized_holder, register_ref, std::less<>>;
+using metrics_registration = std::vector<register_ref>;
+
+class metric_groups_impl : public metric_groups_def {
+    int _handle;
+    metrics_registration _registration;
+public:
+    explicit metric_groups_impl(int handle = default_handle());
+    ~metric_groups_impl();
+    metric_groups_impl(const metric_groups_impl&) = delete;
+    metric_groups_impl(metric_groups_impl&&) = default;
+    metric_groups_impl& add_metric(group_name_type name, const metric_definition& md);
+    metric_groups_impl& add_group(group_name_type name, const std::initializer_list<metric_definition>& l);
+    metric_groups_impl& add_group(group_name_type name, const std::vector<metric_definition>& l);
+    int get_handle() const;
+};
 
 class metric_family {
     metric_instances _instances;
@@ -428,7 +429,7 @@ public:
     }
 
     internalized_labels_type internalize_labels(labels_type labels);
-    void add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels, int handle = default_handle());
+    register_ref add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels, int handle = default_handle());
     void update_aggregate_labels(const metric_id& id, const std::vector<label>& aggregate_labels);
     void remove_registration(const metric_id& id);
     future<> stop() {
