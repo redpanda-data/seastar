@@ -238,7 +238,7 @@ label shard_label("shard");
 namespace impl {
 
 registered_metric::registered_metric(metric_id id, metric_function f, bool enabled, skip_when_empty skip, int handle) :
-        _f(f), _impl(get_local_impl(handle)) {
+        _f(f) {
     _info.enabled = enabled;
     _info.should_skip_when_empty = skip;
     _info.id = id;
@@ -317,7 +317,7 @@ std::unique_ptr<metric_groups_def> create_metric_groups(int handle) {
     return  std::make_unique<metric_groups_impl>(handle);
 }
 
-metric_groups_impl::metric_groups_impl(int handle) : _handle(handle) {}
+metric_groups_impl::metric_groups_impl(int handle) : _handle(handle), _impl(get_local_impl(handle)) {}
 
 metric_groups_impl::~metric_groups_impl() {
     for (const auto& i : _registration) {
