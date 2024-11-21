@@ -567,7 +567,7 @@ void impl::update_metrics_if_needed() {
             if (!metrics.empty()) {
                 // If nothing was added, no need to add the metric_family
                 // and no need to progress
-                mt.emplace_back(metric_family_metadata{mf.second.info(), std::move(metrics)});
+                mt.emplace_back(metric_family_metadata{mf.second.info_ref(), std::move(metrics)});
                 i++;
             }
         }
@@ -610,12 +610,14 @@ register_ref impl::add_registration(const metric_id& id, const metric_type& type
             _labels.insert(i.first);
         }
     } else {
-        _value_map[name].info().type = type.base_type;
-        _value_map[name].info().d = d;
-        _value_map[name].info().inherit_type = type.type_name;
-        _value_map[name].info().name = id.full_name();
-        _value_map[name].info().aggregate_labels = aggregate_labels;
-        impl::update_aggregate(_value_map[name].info());
+        auto info = std::make_shared<metric_family_info>();
+        info->type = type.base_type;
+        info->d = d;
+        info->inherit_type = type.type_name;
+        info->name = id.full_name();
+        info->aggregate_labels = aggregate_labels;
+        impl::update_aggregate(*info);
+        _value_map[name].update_info(std::move(info));
         _value_map[name][rm->info().id.internalized_labels()] = rm;
     }
     dirty();
@@ -629,11 +631,12 @@ void impl::update_aggregate_labels(const metric_id& id,
                                    const std::vector<label>& aggregate_labels) {
     auto iter = _value_map.find(id.full_name());
     if (iter != _value_map.end()) {
-        iter->second.info().aggregate_labels.clear();
+        auto new_info = std::make_shared<metric_family_info>(iter->second.info());
+        new_info->aggregate_labels.clear();
         std::transform(aggregate_labels.begin(), aggregate_labels.end(),
-            std::back_inserter(iter->second.info().aggregate_labels),
+            std::back_inserter(new_info->aggregate_labels),
             [] (const label& l) { return l.name(); });
-
+        iter->second.update_info(std::move(new_info));
         dirty();
     }
 }
@@ -689,7 +692,9 @@ void impl::set_metric_family_configs(const std::vector<metric_family_config>& fa
     for (auto& [name, family] : _value_map) {
         for  (const auto& fc : family_config) {
             if (fc.name == name || fc.regex_name.match(name)) {
-                family.info().aggregate_labels = fc.aggregate_labels;
+                auto new_info = std::make_shared<metric_family_info>(family.info());
+                new_info->aggregate_labels = fc.aggregate_labels;
+                family.update_info(std::move(new_info));
             }
         }
     }
@@ -705,8 +710,11 @@ void impl::set_metric_family_configs(const std::vector<metric_family_config>& fa
     }
     for (auto& mf_metadata: *_metadata) {
         for  (const auto& fc : family_config) {
-            if (fc.name == mf_metadata.mf.name || fc.regex_name.match(mf_metadata.mf.name)) {
-                mf_metadata.mf.aggregate_labels = fc.aggregate_labels;
+            if (fc.name == mf_metadata.mf->name || fc.regex_name.match(mf_metadata.mf->name)) {
+                // TODO: reuse
+                auto new_info = std::make_shared<metric_family_info>(*mf_metadata.mf);
+                new_info->aggregate_labels = fc.aggregate_labels;
+                mf_metadata.mf = std::move(new_info);
             }
         }
     }

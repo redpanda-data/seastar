@@ -63,7 +63,7 @@ static std::set<seastar::sstring> get_label_values(seastar::sstring metric_name,
     auto all_metrics = smi::get_values();
     const auto& all_metadata = *all_metrics->metadata;
     const auto qp_group = find_if(cbegin(all_metadata), cend(all_metadata),
-        [&metric_name] (const auto& x) { return x.mf.name == metric_name; });
+        [&metric_name] (const auto& x) { return x.mf->name == metric_name; });
     BOOST_REQUIRE(qp_group != cend(all_metadata));
     std::set<seastar::sstring> labels;
     for (const auto& metric : qp_group->metrics) {
@@ -253,11 +253,11 @@ SEASTAR_THREAD_TEST_CASE(test_metrics_family_aggregate) {
     seastar::foreign_ptr<seastar::metrics::impl::values_reference> values = seastar::metrics::impl::get_values();
     int count = 0;
     for (auto&& md : (*values->metadata)) {
-        if (md.mf.name == "test_gauge_1") {
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels.size(), 1);
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels[0], "lb");
+        if (md.mf->name == "test_gauge_1") {
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels.size(), 1);
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels[0], "lb");
         } else {
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels.size(), 0);
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels.size(), 0);
         }
         count++;
     }
@@ -271,14 +271,14 @@ SEASTAR_THREAD_TEST_CASE(test_metrics_family_aggregate) {
     values = seastar::metrics::impl::get_values();
     count = 0;
     for (auto&& md : (*values->metadata)) {
-        if (md.mf.name == "test_gauge_1") {
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels.size(), 1);
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels[0], "lb");
-        } else if (md.mf.name == "test_gauge1_1") {
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels.size(), 2);
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels[0], "ll");
+        if (md.mf->name == "test_gauge_1") {
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels.size(), 1);
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels[0], "lb");
+        } else if (md.mf->name == "test_gauge1_1") {
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels.size(), 2);
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels[0], "ll");
         } else {
-            BOOST_CHECK_EQUAL(md.mf.aggregate_labels.size(), 0);
+            BOOST_CHECK_EQUAL(md.mf->aggregate_labels.size(), 0);
         }
         count++;
     }
