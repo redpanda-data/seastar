@@ -151,7 +151,8 @@ const std::vector<metric_family_config>& get_metric_family_configs() {
 
 namespace impl {
 
-bool impl::apply_relabeling(const relabel_config& rc, metric_info& info) {
+bool impl::apply_relabeling(const relabel_config& rc, registered_metric& rm) {
+    auto& info = rm.info();
     std::stringstream s;
     bool first = true;
     for (auto&& l: rc.source_labels) {
@@ -177,19 +178,19 @@ bool impl::apply_relabeling(const relabel_config& rc, metric_info& info) {
     switch (rc.action) {
         case relabel_config::relabel_action::drop:
         case relabel_config::relabel_action::keep: {
-            info.enabled = rc.action == relabel_config::relabel_action::keep;
+            rm.set_enabled(rc.action == relabel_config::relabel_action::keep);
             return true;
         }
         case relabel_config::relabel_action::report_when_empty:
         case relabel_config::relabel_action::skip_when_empty: {
-            info.should_skip_when_empty = (rc.action == relabel_config::relabel_action::skip_when_empty) ? skip_when_empty::yes : skip_when_empty::no;
+            rm.set_skip_when_empty(rc.action == relabel_config::relabel_action::skip_when_empty ? skip_when_empty::yes : skip_when_empty::no);
             return false;
         }
         case relabel_config::relabel_action::drop_label: {
             if (info.id.labels().find(rc.target_label) != info.id.labels().end()) {
                 auto new_labels = info.id.labels();
                 new_labels.erase(rc.target_label);
-                info.id.update_labels(internalize_labels(std::move(new_labels)));
+                rm.update_labels(internalize_labels(std::move(new_labels)));
             }
             return true;
         };
@@ -198,7 +199,7 @@ bool impl::apply_relabeling(const relabel_config& rc, metric_info& info) {
                 std::string fmt_s = match.format(rc.replacement);
                 auto new_labels = info.id.labels();
                 new_labels[rc.target_label] = fmt_s;
-                info.id.update_labels(internalize_labels(std::move(new_labels)));
+                rm.update_labels(internalize_labels(std::move(new_labels)));
             }
             return true;
         }
@@ -239,10 +240,12 @@ namespace impl {
 
 registered_metric::registered_metric(metric_id id, metric_function f, bool enabled, skip_when_empty skip, int handle) :
         _f(f) {
-    _info.enabled = enabled;
-    _info.should_skip_when_empty = skip;
-    _info.id = id;
-    _info.original_labels = id.internalized_labels();
+    auto info = std::make_shared<metric_info>();
+    info->enabled = enabled;
+    info->should_skip_when_empty = skip;
+    info->id = id;
+    info->original_labels = id.internalized_labels();
+    _info = std::move(info);
 }
 
 metric_value metric_value::operator+(const metric_value& c) {
@@ -560,7 +563,7 @@ void impl::update_metrics_if_needed() {
             _current_metrics[i].clear();
             for (auto&& m : mf.second) {
                 if (m.second && m.second->is_enabled()) {
-                    metrics.emplace_back(m.second->info());
+                    metrics.emplace_back(m.second->info_ref());
                     _current_metrics[i].emplace_back(m.second->get_function());
                 }
             }
@@ -593,7 +596,7 @@ std::vector<std::deque<metric_function>>& impl::functions() {
 register_ref impl::add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels, int handle) {
     auto rm = ::seastar::make_shared<registered_metric>(id, f, enabled, skip, handle);
     for (auto&& rl : _relabel_configs) {
-        apply_relabeling(rl, rm->info());
+        apply_relabeling(rl, *rm);
     }
 
     sstring name = id.full_name();
@@ -647,9 +650,9 @@ future<metric_relabeling_result> impl::set_relabel_configs(const std::vector<rel
     for (auto&& family : _value_map) {
         std::vector<shared_ptr<registered_metric>> rms;
         for (auto&& metric = family.second.begin(); metric != family.second.end();) {
-            metric->second->info().id.update_labels(metric->second->info().original_labels);
+            metric->second->update_labels(metric->second->info().original_labels);
             for (auto rl : _relabel_configs) {
-                if (apply_relabeling(rl, metric->second->info())) {
+                if (apply_relabeling(rl, *metric->second)) {
                     dirty();
                 }
             }
@@ -678,7 +681,7 @@ future<metric_relabeling_result> impl::set_relabel_configs(const std::vector<rel
                 new_labels["err"] = id;
                 ilb = internalize_labels(new_labels);
                 conflicts.metrics_relabeled_due_to_collision++;
-                rm->info().id.update_labels(ilb);
+                rm->update_labels(ilb);
             }
 
             family.second[ilb] = rm;

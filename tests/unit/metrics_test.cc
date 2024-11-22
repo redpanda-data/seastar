@@ -67,8 +67,8 @@ static std::set<seastar::sstring> get_label_values(seastar::sstring metric_name,
     BOOST_REQUIRE(qp_group != cend(all_metadata));
     std::set<seastar::sstring> labels;
     for (const auto& metric : qp_group->metrics) {
-        const auto found = metric.id.labels().find(label_name);
-        BOOST_REQUIRE(found != metric.id.labels().cend());
+        const auto found = metric->id.labels().find(label_name);
+        BOOST_REQUIRE(found != metric->id.labels().cend());
         labels.insert(found->second);
     }
     return labels;
@@ -178,7 +178,7 @@ int count_by_label(const std::string& label) {
     int count = 0;
     for (auto&& md : (*values->metadata)) {
         for (auto&& mi : md.metrics) {
-            if (label == "" || mi.id.labels().find(label) != mi.id.labels().end()) {
+            if (label == "" || mi->id.labels().find(label) != mi->id.labels().end()) {
                 count++;
             }
         }
@@ -191,7 +191,7 @@ int count_by_fun(std::function<bool(const seastar::metrics::impl::metric_info&)>
     int count = 0;
     for (auto&& md : (*values->metadata)) {
         for (auto&& mi : md.metrics) {
-            if (f(mi)) {
+            if (f(*mi)) {
                 count++;
             }
         }
