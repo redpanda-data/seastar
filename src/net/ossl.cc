@@ -149,14 +149,6 @@ std::system_error make_ossl_error(const std::string & msg) {
     }
 }
 
-std::system_error make_error_from_errno(const std::string & msg) {
-    if (errno == 0) {
-        return make_ossl_error(msg);
-    } else {
-        return std::system_error(errno, std::generic_category(), msg);
-    }
-}
-
 template<typename T>
 sstring asn1_str_to_str(T* asn1) {
     const auto len = ASN1_STRING_length(asn1);
@@ -908,7 +900,7 @@ public:
             return make_ready_future<stop_iteration>(stop_iteration::no);
         case SSL_ERROR_SYSCALL:
         {
-            auto err = make_error_from_errno("System error encountered during SSL write");
+            auto err = make_ossl_error("System error encountered during SSL write");
             return handle_output_error(std::move(err)).then([] {
                 return stop_iteration::yes;
             });
@@ -1067,7 +1059,7 @@ public:
                             });
                         case SSL_ERROR_SYSCALL:
                         {
-                            auto err = make_error_from_errno("System error during handshake");
+                            auto err = make_ossl_error("System error during handshake");
                             return handle_output_error(std::move(err));
                         }
                         case SSL_ERROR_SSL:
@@ -1187,7 +1179,7 @@ public:
                         return make_ready_future<buf_type>();
                     }
                     _error = std::make_exception_ptr(
-                        make_error_from_errno("System error during SSL read"));
+                        make_ossl_error("System error during SSL read"));
                     return make_exception_future<buf_type>(_error);
                 case SSL_ERROR_SSL:
                     {
@@ -1270,7 +1262,7 @@ public:
                 });
             case SSL_ERROR_SYSCALL:
             {
-                auto err = make_error_from_errno("System error during shutdown");
+                auto err = make_ossl_error("System error during shutdown");
                 return handle_output_error(std::move(err));
             }
             case SSL_ERROR_SSL:
