@@ -192,7 +192,6 @@ struct metric_family_info {
     std::vector<std::string> aggregate_labels;
 };
 
-using metric_family_info_ref = std::shared_ptr<const metric_family_info>;
 
 /*!
  * \brief holds metric metadata
@@ -305,21 +304,21 @@ public:
 
 class metric_family {
     metric_instances _instances;
-    metric_family_info_ref _info;
+    metric_family_info _info;
 public:
     using iterator = metric_instances::iterator;
     using const_iterator = metric_instances::const_iterator;
 
     metric_family() = default;
     metric_family(const metric_family&) = default;
-    // metric_family(const metric_instances& instances) : _instances(instances) {
-    // }
-    metric_family(const metric_instances& instances, const metric_family_info_ref& info) : _instances(instances), _info(info) {
+    metric_family(const metric_instances& instances) : _instances(instances) {
     }
-    metric_family(metric_instances&& instances, metric_family_info_ref&& info) : _instances(std::move(instances)), _info(std::move(info)) {
+    metric_family(const metric_instances& instances, const metric_family_info& info) : _instances(instances), _info(info) {
     }
-    // metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
-    // }
+    metric_family(metric_instances&& instances, metric_family_info&& info) : _instances(std::move(instances)), _info(std::move(info)) {
+    }
+    metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
+    }
 
     register_ref& operator[](const internalized_labels_type& l) {
         return _instances[internalized_holder(l)];
@@ -329,16 +328,12 @@ public:
         return _instances.at(internalized_holder(l));
     }
 
-    const metric_family_info& info() const {
-        return *_info;
-    }
-
-    metric_family_info_ref info_ref() const {
+    metric_family_info& info() {
         return _info;
     }
 
-    void update_info(metric_family_info_ref info) {
-        _info = std::move(info);
+    const metric_family_info& info() const {
+        return _info;
     }
 
     iterator find(const labels_type& l) {
@@ -396,7 +391,7 @@ using metric_metadata_fifo = std::deque<metric_info>;
  * The struct is recreated when impl._value_map changes
  */
 struct metric_family_metadata {
-    metric_family_info_ref mf;
+    metric_family_info mf;
     metric_metadata_fifo metrics;
 };
 

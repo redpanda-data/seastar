@@ -465,7 +465,7 @@ class metric_family_iterator {
             auto& pos_in_metric_per_shard = boost::get<0>(i);
             auto& metric_family = boost::get<1>(i);
             if (_info._name &&  pos_in_metric_per_shard < metric_family->metadata->size() &&
-                    metric_family->metadata->at(pos_in_metric_per_shard).mf->name.compare(*_info._name) <= 0) {
+                    metric_family->metadata->at(pos_in_metric_per_shard).mf.name.compare(*_info._name) <= 0) {
                 pos_in_metric_per_shard++;
             }
             if (pos_in_metric_per_shard >= metric_family->metadata->size()) {
@@ -473,10 +473,10 @@ class metric_family_iterator {
                 continue;
             }
             auto& metadata = metric_family->metadata->at(pos_in_metric_per_shard);
-            int cmp = (!new_name) ? -1 : metadata.mf->name.compare(*new_name);
+            int cmp = (!new_name) ? -1 : metadata.mf.name.compare(*new_name);
             if (cmp < 0) {
-                new_name = &metadata.mf->name;
-                new_family_info = &*metadata.mf;
+                new_name = &metadata.mf.name;
+                new_family_info = &metadata.mf;
                 _info._size = 0;
             }
             if (cmp <= 0) {
@@ -570,7 +570,7 @@ public:
             auto& metadata = metric_family->metadata->at(pos_in_metric_per_shard);
             // the the name is different, that means that on this shard, the metric family
             // does not exist, because everything is sorted by metric family name, this is fine.
-            if (metadata.mf->name == name()) {
+            if (metadata.mf.name == name()) {
                 const mi::value_vector& values = metric_family->values[pos_in_metric_per_shard];
                 const mi::metric_metadata_fifo& metrics_metadata = metadata.metrics;
                 for (auto&& vm : boost::combine(values, metrics_metadata)) {
@@ -626,13 +626,13 @@ metric_family_iterator metrics_families_per_shard::find_bound(const sstring& fam
 metric_family_iterator metrics_families_per_shard::lower_bound(const sstring& family_name) const {
     return find_bound(family_name, [](const sstring& a, const mi::metric_family_metadata& b) {
         //sstring doesn't have a <= operator
-        return a < b.mf->name || a == b.mf->name;
+        return a < b.mf.name || a == b.mf.name;
     });
 }
 
 metric_family_iterator metrics_families_per_shard::upper_bound(const sstring& family_name) const {
     return find_bound(family_name, [](const sstring& a, const mi::metric_family_metadata& b) {
-        return a < b.mf->name;
+        return a < b.mf.name;
     });
 }
 

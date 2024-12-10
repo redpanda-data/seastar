@@ -430,7 +430,7 @@ void impl::run() {
     if (values.size() > 0) {
         std::get<value_iterator>(*ctxt) = values[0].begin();
         std::get<metadata_iterator>(*ctxt) = metadata->at(0).metrics.begin();
-        std::get<type_id>(*ctxt) = metadata->at(0).mf->inherit_type;
+        std::get<type_id>(*ctxt) = metadata->at(0).mf.inherit_type;
     }
 
     auto stop_when = [ctxt, metadata]() {
@@ -472,7 +472,7 @@ void impl::run() {
             if (mf < values.size()) {
                 i = values[mf].begin();
                 md_iterator = metadata->at(mf).metrics.begin();
-                std::get<type_id>(*ctxt) = metadata->at(mf).mf->inherit_type;
+                std::get<type_id>(*ctxt) = metadata->at(mf).mf.inherit_type;
             }
         }
         if (out.empty()) {
