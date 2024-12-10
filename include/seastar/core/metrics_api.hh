@@ -199,9 +199,9 @@ using metric_family_info_ref = std::shared_ptr<const metric_family_info>;
  */
 struct metric_info {
     metric_id id;
-    // internalized_labels_type original_labels;
-    // bool enabled;
-    // skip_when_empty should_skip_when_empty;
+    internalized_labels_type original_labels;
+    bool enabled;
+    skip_when_empty should_skip_when_empty;
 };
 
 using metric_info_ref = std::shared_ptr<const metric_info>;
@@ -257,19 +257,18 @@ public:
     }
 
     bool is_enabled() const {
-        return true;
-        // return _info->enabled;
+        return _info->enabled;
     }
 
-    void set_enabled(bool /* b */) {
-        // auto new_info = std::make_shared<metric_info>(*_info);
-        // new_info->enabled = b;
-        // _info = std::move(new_info);
+    void set_enabled(bool b) {
+        auto new_info = std::make_shared<metric_info>(*_info);
+        new_info->enabled = b;
+        _info = std::move(new_info);
     }
-    void set_skip_when_empty(skip_when_empty /*skip*/) noexcept {
-        // auto new_info = std::make_shared<metric_info>(*_info);
-        // new_info->should_skip_when_empty = skip;
-        // _info = std::move(new_info);
+    void set_skip_when_empty(skip_when_empty skip) noexcept {
+        auto new_info = std::make_shared<metric_info>(*_info);
+        new_info->should_skip_when_empty = skip;
+        _info = std::move(new_info);
     }
 
     void update_labels(internalized_labels_type labels) {
@@ -279,8 +278,7 @@ public:
     }
 
     skip_when_empty get_skip_when_empty() const {
-        return skip_when_empty::no;
-        // return _info->should_skip_when_empty;
+        return _info->should_skip_when_empty;
     }
 
     const metric_id& get_id() const {

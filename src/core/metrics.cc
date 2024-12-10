@@ -19,7 +19,6 @@
  * Copyright (C) 2016 ScyllaDB.
  */
 
-#include "seastar/core/future.hh"
 #ifdef SEASTAR_MODULE
 module;
 #endif
@@ -231,10 +230,10 @@ bool label_instance::operator!=(const label_instance& id2) const {
 /*!
  * \brief get_unique_id generate a random id
  */
-// static std::string get_unique_id() {
-//     std::random_device rd;
-//     return std::to_string(rd()) + "-" + std::to_string(rd()) + "-" + std::to_string(rd()) + "-" + std::to_string(rd());
-// }
+static std::string get_unique_id() {
+    std::random_device rd;
+    return std::to_string(rd()) + "-" + std::to_string(rd()) + "-" + std::to_string(rd()) + "-" + std::to_string(rd());
+}
 
 label shard_label("shard");
 namespace impl {
@@ -242,10 +241,10 @@ namespace impl {
 registered_metric::registered_metric(metric_id id, metric_function f, bool enabled, skip_when_empty skip, int handle) :
         _f(f) {
     auto info = std::make_shared<metric_info>();
-    // info->enabled = enabled;
-    // info->should_skip_when_empty = skip;
+    info->enabled = enabled;
+    info->should_skip_when_empty = skip;
     info->id = id;
-    // info->original_labels = id.internalized_labels();
+    info->original_labels = id.internalized_labels();
     _info = std::move(info);
 }
 
@@ -648,46 +647,46 @@ void impl::update_aggregate_labels(const metric_id& id,
 future<metric_relabeling_result> impl::set_relabel_configs(const std::vector<relabel_config>& relabel_configs) {
     _relabel_configs = relabel_configs;
     metric_relabeling_result conflicts{0};
-    // for (auto&& family : _value_map) {
-    //     std::vector<shared_ptr<registered_metric>> rms;
-    //     for (auto&& metric = family.second.begin(); metric != family.second.end();) {
-    //         metric->second->update_labels(metric->second->info().original_labels);
-    //         for (auto rl : _relabel_configs) {
-    //             if (apply_relabeling(rl, *metric->second)) {
-    //                 dirty();
-    //             }
-    //         }
-    //         if (metric->first.labels_ref() != metric->second->info().id.labels()) {
-    //             // If a metric labels were changed, we should remove it from the map, and place it back again
-    //             rms.push_back(metric->second);
-    //             family.second.erase(metric++);
-    //             dirty();
-    //         } else {
-    //             ++metric;
-    //         }
-    //     }
-    //     for (auto rm : rms) {
-    //         auto ilb = rm->info().id.internalized_labels();
-    //         if (family.second.find(rm->info().id.labels()) != family.second.end()) {
-    //             /*
-    //              You can not have a two metrics with the same name and label, there is a problem with the configuration.
-    //              On startup we would have throw an exception and stop.
-    //              But during normal run, we don't want to crash the server just because a metric reconfiguration.
-    //              We cannot throw away the metric.
-    //              Instead we add it with an extra label, allowing the user to reconfigure.
-    //             */
-    //             seastar_logger.error("Metrics: After relabeling, registering metrics twice for metrics : {}", family.first);
-    //             auto id = get_unique_id();
-    //             auto new_labels = *ilb;
-    //             new_labels["err"] = id;
-    //             ilb = internalize_labels(new_labels);
-    //             conflicts.metrics_relabeled_due_to_collision++;
-    //             rm->update_labels(ilb);
-    //         }
+    for (auto&& family : _value_map) {
+        std::vector<shared_ptr<registered_metric>> rms;
+        for (auto&& metric = family.second.begin(); metric != family.second.end();) {
+            metric->second->update_labels(metric->second->info().original_labels);
+            for (auto rl : _relabel_configs) {
+                if (apply_relabeling(rl, *metric->second)) {
+                    dirty();
+                }
+            }
+            if (metric->first.labels_ref() != metric->second->info().id.labels()) {
+                // If a metric labels were changed, we should remove it from the map, and place it back again
+                rms.push_back(metric->second);
+                family.second.erase(metric++);
+                dirty();
+            } else {
+                ++metric;
+            }
+        }
+        for (auto rm : rms) {
+            auto ilb = rm->info().id.internalized_labels();
+            if (family.second.find(rm->info().id.labels()) != family.second.end()) {
+                /*
+                 You can not have a two metrics with the same name and label, there is a problem with the configuration.
+                 On startup we would have throw an exception and stop.
+                 But during normal run, we don't want to crash the server just because a metric reconfiguration.
+                 We cannot throw away the metric.
+                 Instead we add it with an extra label, allowing the user to reconfigure.
+                */
+                seastar_logger.error("Metrics: After relabeling, registering metrics twice for metrics : {}", family.first);
+                auto id = get_unique_id();
+                auto new_labels = *ilb;
+                new_labels["err"] = id;
+                ilb = internalize_labels(new_labels);
+                conflicts.metrics_relabeled_due_to_collision++;
+                rm->update_labels(ilb);
+            }
 
-    //         family.second[ilb] = rm;
-    //     }
-    // }
+            family.second[ilb] = rm;
+        }
+    }
     return make_ready_future<metric_relabeling_result>(conflicts);
 }
 
