@@ -456,7 +456,7 @@ void impl::run() {
                     continue;
                 }
                 auto m = out.mark();
-                out.put(_host, _period, std::get<type_id>(*ctxt), (*md_iterator)->id, *i);
+                out.put(_host, _period, std::get<type_id>(*ctxt), md_iterator->id, *i);
                 if (!out) {
                     out.reset(m);
                     out_of_space = true;

@@ -204,8 +204,6 @@ struct metric_info {
     skip_when_empty should_skip_when_empty;
 };
 
-using metric_info_ref = std::shared_ptr<const metric_info>;
-
 class internalized_holder;
 using internalized_set = std::set<internalized_holder, std::less<>>;
 
@@ -248,7 +246,7 @@ using metric_implementations = std::unordered_map<int, ::seastar::shared_ptr<imp
 metric_implementations& get_metric_implementations();
 
 class registered_metric final {
-    metric_info_ref _info;
+    metric_info _info;
     metric_function _f;
 public:
     registered_metric(metric_id id, metric_function f, bool enabled=true, skip_when_empty skip=skip_when_empty::no, int handle=default_handle());
@@ -257,44 +255,30 @@ public:
     }
 
     bool is_enabled() const {
-        return _info->enabled;
+        return _info.enabled;
     }
 
     void set_enabled(bool b) {
-        auto new_info = std::make_shared<metric_info>(*_info);
-        new_info->enabled = b;
-        _info = std::move(new_info);
+        _info.enabled = b;
     }
     void set_skip_when_empty(skip_when_empty skip) noexcept {
-        auto new_info = std::make_shared<metric_info>(*_info);
-        new_info->should_skip_when_empty = skip;
-        _info = std::move(new_info);
-    }
-
-    void update_labels(internalized_labels_type labels) {
-        auto new_info = std::make_shared<metric_info>(*_info);
-        new_info->id.update_labels(std::move(labels));
-        _info = std::move(new_info);
+        _info.should_skip_when_empty = skip;
     }
 
     skip_when_empty get_skip_when_empty() const {
-        return _info->should_skip_when_empty;
+        return _info.should_skip_when_empty;
     }
 
     const metric_id& get_id() const {
-        return _info->id;
-    }
-
-    metric_info_ref info_ref() const {
-        return _info;
+        return _info.id;
     }
 
     const metric_info& info() const {
-        return *_info;
+        return _info;
     }
-//     metric_info& info() {
-//         return _info;
-//    }
+    metric_info& info() {
+        return _info;
+   }
     const metric_function& get_function() const {
         return _f;
     }
@@ -397,7 +381,7 @@ public:
 
 using value_map = std::map<sstring, metric_family>;
 
-using metric_metadata_fifo = std::deque<metric_info_ref>;
+using metric_metadata_fifo = std::deque<metric_info>;
 
 /*!
  * \brief holds a metric family metadata
@@ -522,7 +506,7 @@ private:
     void remove_metric_replica(const metric_id& id,
                                const shared_ptr<impl>& destination) const;
     void remove_metric_replica_if_required(const metric_id& id) const;
-    bool apply_relabeling(const relabel_config& rc, registered_metric& info);
+    bool apply_relabeling(const relabel_config& rc, metric_info& info);
 };
 
 const value_map& get_value_map(int handle = default_handle());

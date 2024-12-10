@@ -576,7 +576,7 @@ public:
                 for (auto&& vm : boost::combine(values, metrics_metadata)) {
                     auto& value = boost::get<0>(vm);
                     auto& metric_metadata = boost::get<1>(vm);
-                    f(value, *metric_metadata);
+                    f(value, metric_metadata);
                 }
             }
         }
