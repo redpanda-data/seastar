@@ -99,7 +99,7 @@ registration::registration(type_instance_id&& id, int handle)
 
 seastar::metrics::impl::metric_id to_metrics_id(const type_instance_id & id) {
     seastar::metrics::impl::labels_type labels {{seastar::metrics::shard_label.name(), seastar::metrics::impl::shard()}};
-    auto internalized_labels = std::make_shared<seastar::metrics::impl::labels_type>(std::move(labels));
+    auto internalized_labels = make_lw_shared<seastar::metrics::impl::labels_type>(std::move(labels));
     return seastar::metrics::impl::metric_id(id.plugin(), id.type_instance(), std::move(internalized_labels));
 }
 

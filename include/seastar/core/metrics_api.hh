@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "seastar/core/shared_ptr.hh"
 #include <seastar/core/metrics.hh>
 #include <seastar/util/modules.hh>
 #include <seastar/core/sharded.hh>
@@ -42,7 +43,7 @@ namespace metrics {
 namespace impl {
 
 using labels_type = std::map<sstring, sstring>;
-using internalized_labels_type = std::shared_ptr<const labels_type>;
+using internalized_labels_type = lw_shared_ptr<const labels_type>;
 
 int default_handle();
 
@@ -209,7 +210,7 @@ using internalized_set = std::set<internalized_holder, std::less<>>;
 class internalized_holder {
     internalized_labels_type _labels;
 public:
-    explicit internalized_holder(labels_type labels) : _labels(std::make_shared<labels_type>(std::move(labels))) {
+    explicit internalized_holder(labels_type labels) : _labels(make_lw_shared<labels_type>(std::move(labels))) {
     }
 
     explicit internalized_holder(internalized_labels_type labels) : _labels(std::move(labels)) {
