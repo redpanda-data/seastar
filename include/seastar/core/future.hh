@@ -282,6 +282,13 @@ struct get0_return_type {
 template<typename T>
 using maybe_wrap_ref = std::conditional_t<std::is_reference_v<T>, std::reference_wrapper<std::remove_reference_t<T>>, T>;
 
+// indicate that a single parameter is used and only implicit conversions should be considered
+struct implicit_tag {};
+template <typename T, typename U>
+T id(U &&v) {
+    return std::forward<U>(v);
+}
+
 /// \brief Wrapper for keeping uninitialized values of non default constructible types.
 ///
 /// This is similar to a std::optional<T>, but it doesn't know if it is holding a value or not, so the user is
@@ -304,6 +311,10 @@ struct uninitialized_wrapper_base<T, false> {
 
 public:
     uninitialized_wrapper_base() noexcept = default;
+    template<typename U>
+    void uninitialized_set(implicit_tag, U&& v) {
+        new (&_v.value) maybe_wrap_ref<T>(id<T>(std::forward<U>(v)));
+    }
     template<typename... U>
     std::enable_if_t<!std::is_same_v<std::tuple<std::remove_cv_t<U>...>, std::tuple<tuple_type>>, void>
     uninitialized_set(U&&... vs) {
@@ -326,6 +337,10 @@ public:
 template <typename T> struct uninitialized_wrapper_base<T, true> : private T {
     using tuple_type = future_tuple_type_t<T>;
     uninitialized_wrapper_base() noexcept = default;
+    template<typename U>
+    void uninitialized_set(implicit_tag, U&& v) {
+        new (this) T(id<T>(std::forward<U>(v)));
+    }
     template<typename... U>
     std::enable_if_t<!std::is_same_v<std::tuple<std::remove_cv_t<U>...>, std::tuple<tuple_type>>, void>
     uninitialized_set(U&&... vs) {
