@@ -1370,7 +1370,7 @@ public:
     /// \c std::get<0>(fut.get()) to access the first element of the tuple,
     /// rather than the deprecated \ref get0().
     using get0_return_type = typename future_state::get0_return_type;
-    [[deprecated("Use get() instead")]]
+    // [[deprecated("Use get() instead")]]
     get0_return_type get0() {
         return (get0_return_type)get();
     }
