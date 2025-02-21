@@ -35,6 +35,7 @@ debian_packages=(
     libpciaccess-dev
     libcrypto++-dev
     libboost-all-dev
+    libssl-dev
     libxml2-dev
     xfslibs-dev
     libgnutls28-dev
@@ -83,6 +84,8 @@ redhat_packages=(
     gcc
     make
     meson
+    openssl
+    openssl-devel
     python3
     python3-pyelftools
     systemtap-sdt-devel
@@ -217,6 +220,8 @@ opensuse_packages=(
     lksctp-tools-devel
     meson
     ninja
+    openssl
+    openssl-devel
     ragel
     xfsprogs-devel
     yaml-cpp-devel
