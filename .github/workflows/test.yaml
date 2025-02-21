@@ -86,6 +86,7 @@ jobs:
             --compiler ${{ inputs.compiler }}     \
             --c-compiler $CC                      \
             --mode ${{ inputs.mode }}             \
+            --ssl-provider OpenSSL                \
             $MAYBE_CCACHE_OPT                     \
             ${{ inputs.options }}                 \
             ${{ inputs.enables }}
