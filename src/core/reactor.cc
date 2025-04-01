@@ -763,7 +763,6 @@ class backtrace_buffer {
 public:
     backtrace_buffer(bool immediate = false)
         : _immediate{immediate} {}
-
     ~backtrace_buffer() {
         flush();
     }
@@ -775,7 +774,7 @@ public:
     backtrace_buffer &operator = (backtrace_buffer &&) = delete;
 
     void flush() noexcept {
-        if (!_immediate && _pos > 0) {
+        if (!_immediate) {
             print_safe(_buf, _pos);
             _pos = 0;
         }
