@@ -217,7 +217,8 @@ public:
     /// Returns the default exception type (\ref abort_requested_exception) for this abort source.
     /// Overridable by derived classes.
     virtual std::exception_ptr get_default_exception() const noexcept {
-        return make_exception_ptr(abort_requested_exception());
+        static const thread_local auto default_exception = make_exception_ptr(abort_requested_exception());
+        return default_exception;
     }
 };
 
