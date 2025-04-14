@@ -25,7 +25,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Seastar test runner")
     parser.add_argument('--fast',  action="store_true", help="Run only fast tests")
-    parser.add_argument('--name',  action="store", help="Run only test whose name contains given string")
+    parser.add_argument('--name',  action="store", help="Run only test whose name contains given string", default="cpu_profiler$")
     parser.add_argument('--mode', choices=seastar_cmake.SUPPORTED_MODES, help="Run only tests for given build mode")
     parser.add_argument('--build-root', action='store', default=seastar_cmake.DEFAULT_BUILD_ROOT, type=str,
                         help="The name of the build root build directoy: "
@@ -62,6 +62,8 @@ if __name__ == "__main__":
             TRANSLATED_CTEST_ARGS += ['--verbose']
         if args.name:
             TRANSLATED_CTEST_ARGS += ['-R', args.name]
+
+        TRANSLATED_CTEST_ARGS += ["--repeat", "until-fail:100"]
 
         CTEST_ARGS = ['ctest', BUILD_PATH] + TRANSLATED_CTEST_ARGS
         print(CTEST_ARGS)
