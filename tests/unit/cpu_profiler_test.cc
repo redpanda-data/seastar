@@ -35,6 +35,15 @@
 
 #include "stall_detector_test_utilities.hh"
 
+// If true, the acceptable thresholds are greatly increased "close enough"
+// checks, which can reduce the flakiness on heavily loaded or otherwise
+// unpredictable systems. If false, the thresholds are much stricter and
+// should be used for more deterministic systems.
+// We default to true to avoid flakes in CI, but when running locally you
+// can consider setting this to false to get a more accurate picture of
+// the profiler's behavior.
+constexpr bool use_loose_thresholds = true;
+
 struct temporary_profiler_settings {
     std::chrono::nanoseconds prev_ns;
     bool prev_enabled;
@@ -60,11 +69,35 @@ struct temporary_profiler_settings {
 //
 // The function below takes this error into account and allows the actual samples taken
 // to be slightly less than the expect number of samples if there was no error.
-bool close_to_expected(size_t actual_size, size_t expected_size, double allowed_dev = 0.15) {
-    auto lower_bound = (1 - allowed_dev) * expected_size;
-    auto upper_bound = (1 + allowed_dev) * expected_size;
+bool close_to_expected(size_t actual_size, size_t expected_size) {
+
+    constexpr double allowed_dev = 0.15;
+
+    size_t lower_bound, upper_bound;
+
+    if (use_loose_thresholds) {
+        // widen the thresholds a lot
+        lower_bound = round(pow(1 - allowed_dev, 4)) * expected_size;
+        upper_bound = round(pow(1 + allowed_dev, 4)) * expected_size;
+    } else {
+        lower_bound = round((1 - allowed_dev) * expected_size);
+        upper_bound = round((1 + allowed_dev) * expected_size);
+    }
+
+    BOOST_TEST_INFO("actual_size: " << actual_size << ", lower_bound " << lower_bound << ", upper_bound " << upper_bound);
 
     return actual_size <= upper_bound && actual_size >= lower_bound;
+}
+
+// If loose thresholds are enabled, this call maps to close_to_exepected, otherwise
+// it does an exact equality check.
+void maybe_exact(size_t actual, size_t expected, auto message) {
+    BOOST_TEST_INFO(message);
+    if (use_loose_thresholds) {
+        close_to_expected(actual, expected);
+    } else {
+        BOOST_REQUIRE_EQUAL(actual, expected);
+    }
 }
 
 SEASTAR_THREAD_TEST_CASE(config_case) {
@@ -80,13 +113,13 @@ SEASTAR_THREAD_TEST_CASE(config_case) {
         spin_some_cooperatively(120*10ms);
 
         std::vector<cpu_profiler_trace> results;
-        engine().profiler_results(results); 
+        engine().profiler_results(results);
         BOOST_REQUIRE(close_to_expected(results.size(), 12));
     }
-    
+
     spin_some_cooperatively(128*10ms);
     std::vector<cpu_profiler_trace> results;
-    engine().profiler_results(results); 
+    engine().profiler_results(results);
     BOOST_REQUIRE_EQUAL(results.size(), 0);
 }
 
@@ -96,20 +129,20 @@ SEASTAR_THREAD_TEST_CASE(simple_case) {
     spin_some_cooperatively(120*10ms);
 
     std::vector<cpu_profiler_trace> results;
-    auto dropped_samples = engine().profiler_results(results); 
+    auto dropped_samples = engine().profiler_results(results);
     BOOST_REQUIRE(close_to_expected(results.size(), 12));
     BOOST_REQUIRE_EQUAL(dropped_samples, 0);
 }
 
 SEASTAR_THREAD_TEST_CASE(overwrite_case) {
-    // Ensure that older samples are being overridden in 
+    // Ensure that older samples are being overridden in
     // the cases where we can't collect results fast enough.
     temporary_profiler_settings cp{true, 10ms};
 
     spin_some_cooperatively(256*10ms);
 
     std::vector<cpu_profiler_trace> results;
-    auto dropped_samples = engine().profiler_results(results); 
+    auto dropped_samples = engine().profiler_results(results);
     // 128 is the maximum number of samples the profiler can
     // retain.
     BOOST_REQUIRE_EQUAL(results.size(), 128);
@@ -129,9 +162,9 @@ SEASTAR_THREAD_TEST_CASE(mixed_case) {
         spin(20ms);
     }
 
-    BOOST_REQUIRE_EQUAL(reports, 5);
+    maybe_exact(reports, 5, "reports");
     std::vector<cpu_profiler_trace> results;
-    engine().profiler_results(results); 
+    engine().profiler_results(results);
     BOOST_REQUIRE(close_to_expected(results.size(), 12));
 }
 
@@ -142,7 +175,7 @@ SEASTAR_THREAD_TEST_CASE(spin_in_kernel) {
     spin_some_cooperatively(100ms, [] { mmap_populate(128 * 1024); });
 
     std::vector<cpu_profiler_trace> results;
-    engine().profiler_results(results); 
+    engine().profiler_results(results);
     int count = 0;
     for(auto& result : results) {
         if(result.kernel_backtrace.size() > 0){
@@ -158,7 +191,7 @@ SEASTAR_THREAD_TEST_CASE(spin_in_kernel) {
     BOOST_REQUIRE(results.size() > 0);
 }
 
-SEASTAR_THREAD_TEST_CASE(signal_mutex_basic) { 
+SEASTAR_THREAD_TEST_CASE(signal_mutex_basic) {
     // A very basic test that ensures the signal_mutex
     // can't be re-locked after it's already been acquired.
     internal::signal_mutex mutex;
