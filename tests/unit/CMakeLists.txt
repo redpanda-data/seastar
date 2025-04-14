@@ -99,7 +99,7 @@ function (seastar_add_test name)
         list (APPEND args ${jenkins_args})
       endif ()
 
-      list (APPEND args -- -c ${Seastar_UNIT_TEST_SMP})
+      list (APPEND args "--log_level=unit_scope" -- -c ${Seastar_UNIT_TEST_SMP})
     elseif (parsed_args_KIND STREQUAL "BOOST")
       list (APPEND libraries
         Boost::unit_test_framework

@@ -63,7 +63,7 @@ if __name__ == "__main__":
         if args.name:
             TRANSLATED_CTEST_ARGS += ['-R', args.name]
 
-        TRANSLATED_CTEST_ARGS += ["--repeat", "until-fail:100"]
+        TRANSLATED_CTEST_ARGS += ["--repeat", "until-fail:100", "--verbose"]
 
         CTEST_ARGS = ['ctest', BUILD_PATH] + TRANSLATED_CTEST_ARGS
         print(CTEST_ARGS)
