@@ -47,3 +47,6 @@ jobs:
       mode: debug
       enables: --enable-cxx-modules
       enable-ccache: false
+    # disable modules build as we aren't using module and it is quite
+    # broken at the moment
+    if: false
