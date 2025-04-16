@@ -1277,7 +1277,7 @@ linux_perf_event::~linux_perf_event() {
 void linux_perf_event::arm_timer(std::chrono::nanoseconds period) {
     uint64_t ns =  period / 1ns;
     _next_signal_time = reactor::now() + period;
-    
+
     // clear out any existing records in the ring buffer, so when we get interrupted next time
     // we have only the stack associated with that interrupt, and so we don't overflow.
     data_area_reader(*this).skip_all();
@@ -1326,7 +1326,7 @@ void linux_perf_event::kernel_backtrace::read_backtrace(std::function<void (uint
         for (uint64_t i = 0; i < nr; ++i) {
             // TODO: the first u64 here will be a non-address token
             // used by perf to indicate which type of callchain this is.
-            // Should we check that it is PERF_CONTEXT_KERNEL and skip 
+            // Should we check that it is PERF_CONTEXT_KERNEL and skip
             // outputting that value as it's not an address?
             // See: https://github.com/torvalds/linux/commit/f9188e023c248d73f
             fn(uintptr_t(_reader.read_u64()));
@@ -1552,7 +1552,11 @@ void cpu_stall_detector::generate_trace() {
     buf.append("Reactor stalled for ");
     buf.append_decimal(uint64_t(delta / 1ms));
     buf.append(" ms");
-    print_with_backtrace(buf, _config.oneline);
+    if (std::uncaught_exceptions() > 0) {
+        buf.append(", backtrace omitted (uncaught exception in progress)\n");
+    } else {
+        print_with_backtrace(buf, _config.oneline);
+    }
     maybe_report_kernel_trace();
 }
 
@@ -4162,7 +4166,7 @@ void smp::create_thread(std::function<void ()> thread_loop) {
 
 // Installs handler for Signal which ensures that Func is invoked only once
 // in the whole program and that after it is invoked the default handler is restored.
-template<int Signal, void(*Func)()>
+template<int Signal, void(*Func)(siginfo_t *, ucontext_t *)>
 void install_oneshot_signal_handler() {
     static bool handled = false;
     static util::spinlock lock;
@@ -4172,7 +4176,7 @@ void install_oneshot_signal_handler() {
         std::lock_guard<util::spinlock> g(lock);
         if (!handled) {
             handled = true;
-            Func();
+            Func(info, (ucontext_t *)p);
             signal(sig, SIG_DFL);
         }
     };
@@ -4190,12 +4194,58 @@ static void reraise_signal(int signo) {
     pthread_kill(pthread_self(), signo);
 }
 
-static void sigsegv_action() noexcept {
+static void sigsegv_action(siginfo_t *info, ucontext_t* uc) noexcept {
+    print_safe("Segmentation fault: si_code: ");
+    auto code = info->si_code;
+    print_decimal_safe(static_cast<unsigned>(info->si_code));
+
+    if (code == SI_USER) {
+        print_safe(", si_pid: ");
+        // print the pid in the case the signal was sent by someone else
+        print_decimal_safe(static_cast<unsigned>(info->si_pid));
+    } else if (code == SEGV_MAPERR || code == SEGV_MAPERR || code == SEGV_BNDERR) {
+        // print the address of the data access
+        print_safe(", si_addr: ");
+        print_zero_padded_hex_safe(reinterpret_cast<uintptr_t>(info->si_addr));
+    }
+
+
+    uintptr_t ip;
+    if (uc) {
+#if defined(__x86_64__)
+        ip = uc->uc_mcontext.gregs[REG_RIP];
+#elif defined(__aarch64__)
+        ip = uc->uc_mcontext.pc;
+#else
+        ip = 0xBAD;
+#endif
+    } else {
+        ip = 0xBAD2;
+    }
+    print_safe(", ip: ");
+    print_zero_padded_hex_safe(ip);
+    print_safe("\n");
+
+    // Print the resolved IP, i.e., suitable for use
+    // with addr2line and other tools which expect an
+    // address without any added offset (from ASLR or
+    // because it's a relocated shared object).
+    print_safe("Segmentation fault: resolved ip: 0x");
+    auto f = decorate(ip);
+    print_zero_padded_hex_safe(f.addr);
+    print_safe(" in ");
+    print_safe(f.so->name.c_str());
+    print_safe("[0x");
+    print_zero_padded_hex_safe(f.so->begin);
+    print_safe("+0x");
+    print_zero_padded_hex_safe(f.so->end - f.so->begin);
+    print_safe("]\n");
+
     print_with_backtrace("Segmentation fault");
     reraise_signal(SIGSEGV);
 }
 
-static void sigabrt_action() noexcept {
+static void sigabrt_action(siginfo_t *info, ucontext_t* uc) noexcept {
     print_with_backtrace("Aborting");
     reraise_signal(SIGABRT);
 }
