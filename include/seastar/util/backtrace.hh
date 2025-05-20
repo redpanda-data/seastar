@@ -25,6 +25,7 @@
 #include <seastar/core/print.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/internal/signal_mutex.hh>
 #include <seastar/util/modules.hh>
 #include <seastar/util/assert.hh>
 
@@ -59,6 +60,19 @@ bool operator==(const frame& a, const frame& b) noexcept;
 // will be considered as part of the executable.
 frame decorate(uintptr_t addr) noexcept;
 
+
+namespace {
+inline int guarded_backtrace(void **array, int size) noexcept {
+    static thread_local internal::signal_mutex mux{};
+    // ::backtrace isn't re-entrant so avoid calling it concurrently from the same thread.
+    if (auto guard_opt = mux.try_lock(); guard_opt.has_value()) {
+        return ::backtrace(array, size);
+    }
+
+    return 0;
+}
+}
+
 // Invokes func for each frame passing it as argument.
 // incremental=false is the default mode and simply calls ::backtrace once
 // and then calls func for each frame. If the ::backtrace call crashes,
@@ -77,7 +91,7 @@ void backtrace(Func&& func, bool incremental = false) noexcept(noexcept(func(fra
 
     if (incremental) {
         for (size_t last_frame = 1; last_frame <= max_backtrace; ++last_frame) {
-            int n = ::backtrace(buffer, last_frame);
+            int n = guarded_backtrace(buffer, last_frame);
             if (n < static_cast<int>(last_frame)) {
                 return;
             }
@@ -85,7 +99,7 @@ void backtrace(Func&& func, bool incremental = false) noexcept(noexcept(func(fra
             func(decorate(ip - 1));
         }
     } else {
-        int n = ::backtrace(buffer, max_backtrace);
+        int n = guarded_backtrace(buffer, max_backtrace);
         for (int i = 0; i < n; ++i) {
             auto ip = reinterpret_cast<uintptr_t>(buffer[i]);
             func(decorate(ip - 1));
@@ -125,6 +139,10 @@ public:
 
     bool operator!=(const simple_backtrace& o) const noexcept {
         return !(*this == o);
+    }
+
+    bool is_empty() const noexcept {
+        return _frames.empty();
     }
 };
 
