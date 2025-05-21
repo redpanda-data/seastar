@@ -24,8 +24,13 @@
 #include <seastar/core/when_all.hh>
 #include <seastar/util/assert.hh>
 #include <seastar/util/defer.hh>
+
+#ifdef SEASTAR_WITH_TLS_OSSL
+#include <openssl/evp.h>
+#else
 #include <gnutls/crypto.h>
 #include <gnutls/gnutls.h>
+#endif
 
 namespace seastar::experimental::websocket {
 
@@ -133,14 +138,39 @@ future<> connection::read_one() {
 
 std::string sha1_base64(std::string_view source) {
     unsigned char hash[20];
+
+#ifdef SEASTAR_WITH_TLS_OSSL
+    const auto encode_capacity = [](size_t input_size) {
+        return (((4 * input_size) / 3) + 3) & ~0x3U;
+    };
+    unsigned int hash_size = sizeof(hash);
+    auto md_ptr = EVP_MD_fetch(nullptr, "SHA1", nullptr);
+    if (!md_ptr) {
+        throw websocket::exception("Failed to fetch SHA-1 algorithm from OpenSSL");
+    }
+
+    auto free_evp_md_ptr = 
+        defer([&]() noexcept  { EVP_MD_free(md_ptr); });
+
+    assert(hash_size == static_cast<unsigned int>(EVP_MD_get_size(md_ptr)));
+
+    if (1 != EVP_Digest(source.data(), source.size(), hash, &hash_size, md_ptr, nullptr)) {
+        throw websocket::exception("Failed to perform SHA-1 digest in OpenSSL");
+    }
+
+    auto base64_encoded = uninitialized_string<std::string>(encode_capacity(hash_size));
+    EVP_EncodeBlock(reinterpret_cast<unsigned char *>(base64_encoded.data()), hash, hash_size);
+    return base64_encoded;
+#else
     SEASTAR_ASSERT(sizeof(hash) == gnutls_hash_get_len(GNUTLS_DIG_SHA1));
     if (int ret = gnutls_hash_fast(GNUTLS_DIG_SHA1, source.data(), source.size(), hash);
         ret != GNUTLS_E_SUCCESS) {
         throw websocket::exception(fmt::format("gnutls_hash_fast: {}", gnutls_strerror(ret)));
     }
     return encode_base64(std::string_view(reinterpret_cast<const char*>(hash), sizeof(hash)));
+#endif
 }
-
+#ifndef SEASTAR_WITH_TLS_OSSL
 std::string encode_base64(std::string_view source) {
     gnutls_datum_t src_data{
         .data = reinterpret_cast<uint8_t*>(const_cast<char*>(source.data())),
@@ -154,5 +184,5 @@ std::string encode_base64(std::string_view source) {
     // base64_encoded.data is "unsigned char *"
     return std::string(reinterpret_cast<const char*>(encoded_data.data), encoded_data.size);
 }
-
+#endif
 }
