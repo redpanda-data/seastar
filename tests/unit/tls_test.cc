@@ -1688,9 +1688,11 @@ SEASTAR_THREAD_TEST_CASE(test_peer_certificate_chain_handling) {
         };
 
         auto ders = {read_file(certfile("test.crt.der"))};
-
-        BOOST_REQUIRE(std::ranges::equal(scrts, ders));
-        BOOST_REQUIRE(std::ranges::equal(ccrts, ders));
+        // We need to take the first certificate from the chain as there is a 
+        // difference between the OpensSSL and GnuTLS, OpenSSL cert chain always 
+        // contains the server certifacate.
+        BOOST_REQUIRE(std::ranges::equal(std::views::take(ccrts,1), ders));
+        BOOST_REQUIRE(std::ranges::equal(std::views::take(scrts,1), ders));
     }
 }
 
@@ -1756,7 +1758,12 @@ static void do_test_tls13_session_tickets(bool reset_server) {
     b.set_x509_key_file(certfile("test.crt"), certfile("test.key"), tls::x509_crt_format::PEM).get();
     b.set_x509_trust_file(certfile("catest.pem"), tls::x509_crt_format::PEM).get();
     b.set_session_resume_mode(tls::session_resume_mode::TLS13_SESSION_TICKET);
-    b.set_priority_string("SECURE128:+SECURE192:-VERS-TLS-ALL:+VERS-TLS1.3");
+    #ifdef SEASTAR_WITH_TLS_OSSL
+        static const sstring prio_str("TLS_AES_128_CCM_8_SHA256");
+    #else
+        static const sstring prio_str("NORMAL:-VERS-ALL:+VERS-TLS1.3:-CIPHER-ALL:+AES-128-CCM-8");
+    #endif 
+    set_priority_string(b, prio_str, true);
 
     auto creds = b.build_certificate_credentials();
     auto serv = b.build_server_credentials();
@@ -1866,10 +1873,14 @@ SEASTAR_THREAD_TEST_CASE(test_tls13_session_tickets) {
     do_test_tls13_session_tickets(false);
 }
 
+/**
+* TODO: we currently do not support retaining the session keys when using OpenSSL
+*/
+#ifndef SEASTAR_WITH_TLS_OSSL
 SEASTAR_THREAD_TEST_CASE(test_tls13_session_tickets_retain_session_key) {
     do_test_tls13_session_tickets(true);
 }
-
+#endif
 SEASTAR_THREAD_TEST_CASE(test_tls13_session_tickets_invalidated_by_reload) {
     tls::credentials_builder b;
     tmpdir tmp;
@@ -2077,8 +2088,9 @@ SEASTAR_THREAD_TEST_CASE(test_reload_certificates_with_only_shard0_notify) {
             }
 
             try {
-                f2.get();
-                BOOST_FAIL("should not reach");
+                auto b = f2.get();
+                // it is either an exception or an empty read
+                BOOST_CHECK_EQUAL(b.size(),0);
             } catch (...) {
                 // ok
             }
