@@ -34,30 +34,6 @@ namespace internal {
 
 using namespace std::chrono_literals;
 
-signal_mutex::guard::~guard() {
-    if (_mutex == nullptr) {
-        return;
-    }
-    // Ensure the subsequent store isn't hoisted by the the
-    // compiler into the critical section it's intended to
-    // protect.
-    std::atomic_signal_fence(std::memory_order_release);
-    _mutex->_mutex.store(false, std::memory_order_relaxed);
-}
-
-std::optional<signal_mutex::guard> signal_mutex::try_lock() {
-    if (!_mutex.load(std::memory_order_relaxed)) {
-        _mutex.store(true, std::memory_order_relaxed);
-        // Ensure that this read-modify-update operation isn't
-        // mixed into the critical section it's intended to protect
-        // by the compiler.
-        std::atomic_signal_fence(std::memory_order_acq_rel);
-        return {guard(this)};
-    }
-
-    return std::nullopt;
-}
-
 namespace {
 thread_local bool force_drop_stacktraces = false;
 }
@@ -162,6 +138,14 @@ void cpu_profiler::on_signal() {
         _traces.emplace_back();
         _traces.back().user_backtrace = current_backtrace_tasklocal();
         _traces.back().sg = current_scheduling_group();
+
+        if (_traces.back().user_backtrace.is_empty()) {
+            // An empty backtrace implies that there was some issue collecting
+            // the backtrace. Currently the most likely reason is that another
+            // backtrace was being collected when the profiler interrupted the
+            // process.
+            _stats.dropped_samples_from_mutex_contention++;
+        }
 
         auto kernel_bt = try_get_kernel_backtrace();
         if (kernel_bt) {
