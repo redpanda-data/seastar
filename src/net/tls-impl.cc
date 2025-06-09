@@ -726,6 +726,10 @@ future<tls::session_data> tls::get_session_resume_data(connected_socket& socket)
     return get_tls_socket(socket)->get_session_resume_data();
 }
 
+const circular_buffer<sstring> & get_tls_log_buffer(connected_socket& socket) {
+    return get_tls_socket(socket)->get_tls_log_buffer();
+}
+
 std::string_view tls::format_as(subject_alt_name_type type) {
     switch (type) {
         case subject_alt_name_type::dnsname:

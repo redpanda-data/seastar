@@ -36,6 +36,7 @@
 module;
 #endif
 
+#include <fmt/ostream.h>
 #include <fmt/ranges.h>
 #include <openssl/bio.h>
 #include <openssl/core_names.h>
@@ -71,7 +72,13 @@ module seastar;
 #include <seastar/util/log.hh>
 #endif
 
+template<> struct fmt::formatter<seastar::tls::session> : public fmt::formatter<string_view> {
+    auto format(const seastar::tls::session&, fmt::format_context& ctx) const -> decltype(ctx.out());
+};
+
 namespace seastar {
+
+logger tls_log("seastar-tls");
 
 enum class ossl_errc : int{};
 
@@ -838,10 +845,13 @@ class session : public enable_shared_from_this<session>, public session_impl {
 public:
     using buf_type = temporary_buffer<char>;
     using frag_iter = net::fragment*;
+    static constexpr auto max_log_message_buffer_size = 256;
 
     session(session_type t, shared_ptr<tls::certificate_credentials> creds,
             std::unique_ptr<net::connected_socket_impl> sock, tls_options options = {})
       : _sock(std::move(sock))
+      , _local_address(fmt::to_string(_sock->local_address()))
+      , _remote_address(fmt::to_string(_sock->remote_address()))
       , _creds(creds->_impl)
       , _in(_sock->source())
       , _out(_sock->sink())
@@ -858,6 +868,7 @@ public:
           return ssl;
       }())
       , _type(t) {
+        _log_messages.reserve(max_log_message_buffer_size);
         if (1 != SSL_set_ex_data(_ssl.get(), SSL_EX_DATA_SESSION, this)) {
             throw make_ossl_error("Failed to set EX data for SSL session");
         }
@@ -909,11 +920,17 @@ public:
         assert(_output_pending.available());
     }
 
+    const circular_buffer<sstring>& get_tls_log_buffer() const override { 
+        return _log_messages;
+    }
+
     // This function waits for the _output_pending future to resolve
     // If an error occurs, it is saved off into _error and returned
     future<> wait_for_output() {
+        log_trace("{} wait_for_output, _output_pending: {}", *this, _output_pending.available());
         return std::exchange(_output_pending, make_ready_future())
           .handle_exception([this](auto ep) {
+            log_debug("{} wait_for_output error: {}", *this, ep);
               _error = ep;
               return make_exception_future(ep);
           });
@@ -984,7 +1001,9 @@ public:
     // will attempt to send the provided packet.  If a renegotiation is needed
     // any unprocessed part of the packet is returned.
     future<net::packet> do_put(net::packet p) {
+        log_trace("{} do_put, p.len: {}, _output_pending: {}", *this, p.len(), _output_pending.available());
         if (!connected()) {
+            log_trace("{} do_put: not connected", *this);
             return make_ready_future<net::packet>(std::move(p));
         }
         assert(_output_pending.available());
@@ -1003,8 +1022,10 @@ public:
                             size_t bytes_written = 0;
                             auto write_rc = SSL_write_ex(
                                 _ssl.get(), frag_view.data(), frag_view.size(), &bytes_written);
+                            log_trace("{} do_put: SSL_write_ex: {}", *this, write_rc);
                             if (write_rc != 1) {
                                 const auto ssl_err = SSL_get_error(_ssl.get(), write_rc);
+                                log_trace("{} do_put: SSL_get_error: {}", *this, ssl_err);
                                 if (ssl_err == SSL_ERROR_WANT_WRITE) {
                                     return wait_for_output().then([] {
                                         return stop_iteration::no;
@@ -1033,6 +1054,7 @@ public:
     // Used to push unencrypted data through OpenSSL, which will
     // encrypt it and then place it into the output bio.
     future<> put(net::packet p) override {
+        log_trace("{} put, p.len: {}, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, p.len(), _error, _shutdown, eof(), connected());
         constexpr size_t openssl_max_record_size = 16 * 1024;
         if (_error) {
             return make_exception_future(_error);
@@ -1059,8 +1081,10 @@ public:
             return do_put(std::move(p));
         }).then([this](net::packet p) {
             if (eof() || p.len() == 0) {
+                log_trace("{} put: eof: {}, p.len: {}", *this, eof(), p.len());
                 return make_ready_future();
             } else {
+                log_trace("{} put: re-handshake with p.len: {}", *this, p.len());
                 return handshake().then([this, p = std::move(p)]() mutable {
                     return put(std::move(p));
                 });
@@ -1072,6 +1096,7 @@ public:
     // This function will walk through the handshake with a remote peer
     // If EOF is encountered, ENOTCONN is thrown
     future<> do_handshake() {
+        log_trace("{} do_handshake, _error: {}, _shutdown: {}, eof:{}, connected: {}", *this, _error, _shutdown, eof(), connected());
         if (eof()) {
             // if we have experienced and eof, set the error and return
             // GnuTLS will probably return GNUTLS_E_PREMATURE_TERMINATION
@@ -1089,8 +1114,10 @@ public:
             [this] {
                 try {
                     auto n = SSL_do_handshake(_ssl.get());
+                    log_trace("{} do_handshake: SSL_do_handshake: {}", *this, n);
                     if (n <= 0) {
                         auto ssl_error = SSL_get_error(_ssl.get(), n);
+                        log_trace("{} do_handshake: SSL_get_error: {}", *this, ssl_error);
                         switch(ssl_error) {
                         case SSL_ERROR_NONE:
                         // probably shouldn't have gotten here
@@ -1151,17 +1178,20 @@ public:
     // This function will attempt to pull data off of the _in stream
     // if there isn't already data needing to be processed first.
     future<> wait_for_input() {
+        log_trace("{} wait_for_input, _input.empty(): {}, _eof: {}, _error: {}", *this, _input.empty(), _eof, _error);
         // If we already have data, then it needs to be processed
         if (!_input.empty()) {
             return make_ready_future();
         }
         return _in.get()
           .then([this](buf_type buf) {
+            log_trace("{} wait_for_input: got {} bytes", *this, buf.size());
               // Set EOF if it's empty
               _eof |= buf.empty();
               _input = std::move(buf);
           })
           .handle_exception([this](auto ep) {
+            log_debug("{} wait_for_input error: {}", *this, ep);
               _error = ep;
               return make_exception_future(ep);
           });
@@ -1172,10 +1202,12 @@ public:
     // SSL session using SSL_read.  If ther eis no data, then
     // we will call perform_pull and wait for data to arrive.
     future<buf_type> do_get() {
+        log_trace("{} do_get, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         // Data is available to be pulled of the SSL session if there is pending
         // data on the SSL session or there is data in the in_bio() which SSL reads
         // from
         auto data_to_pull = (BIO_ctrl_pending(in_bio()) + SSL_pending(_ssl.get())) > 0;
+        log_trace("{} do_get: data_to_pull: {}", *this, data_to_pull);
         auto f = make_ready_future<>();
         if (!data_to_pull) {
             // If nothing is in the SSL buffers then we may have to wait for
@@ -1187,12 +1219,15 @@ public:
                 return make_ready_future<buf_type>();
             }
             auto avail = BIO_ctrl_pending(in_bio()) + SSL_pending(_ssl.get());
+            log_trace("{} do_get: available bytes: {}", *this, avail);
             buf_type buf(avail);
             size_t bytes_read = 0;
             auto read_result = SSL_read_ex(
               _ssl.get(), buf.get_write(), avail, &bytes_read);
+            log_trace("{} do_get: SSL_read_ex: {}, bytes_read: {}", *this, read_result, bytes_read);
             if (read_result != 1) {
                 const auto ssl_err = SSL_get_error(_ssl.get(), read_result);
+                log_trace("{} do_get: SSL_get_error: {}", *this, ssl_err);
                 switch (ssl_err) {
                 case SSL_ERROR_ZERO_RETURN:
                     // Remote end has closed
@@ -1252,6 +1287,7 @@ public:
 
     // Called by user applications to pull data off of the TLS session
     future<buf_type> get() override {
+        log_trace("{} get, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         if (_error) {
             return make_exception_future<buf_type>(_error);
         }
@@ -1264,6 +1300,7 @@ public:
         return with_semaphore(_in_sem, 1, std::bind(&session::do_get, this))
           .then([this](buf_type buf) {
               if (buf.empty() && !eof()) {
+                  log_trace("{} get: empty buf, re-handshake", *this);
                   return handshake().then(std::bind(&session::get, this));
               }
               return make_ready_future<buf_type>(std::move(buf));
@@ -1272,17 +1309,20 @@ public:
 
     // Performs shutdown
     future<> do_shutdown() {
+        log_trace("{} do_shutdown, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         if (_error || !connected()) {
             return make_ready_future();
         }
 
         auto res = SSL_shutdown(_ssl.get());
+        log_trace("{} do_shutdown: SSL_shutdown: {}", *this, res);
         if (res == 1) {
             return wait_for_output();
         } else if (res == 0) {
             return yield().then([this] { return do_shutdown(); });
         } else {
             auto ssl_err = SSL_get_error(_ssl.get(), res);
+            log_trace("{} do_shutdown: SSL_get_error: {}", *this, ssl_err);
             switch (ssl_err) {
             case SSL_ERROR_NONE:
                 // this is weird, yield and try again
@@ -1380,6 +1420,7 @@ public:
     // This function waits for eof() to occur on the input stream
     // Unless wait_for_eof_on_shutdown is false
     future<> wait_for_eof() {
+        log_trace("{} wait_for_eof, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         if (!_options.wait_for_eof_on_shutdown) {
             // Seastar option to allow users to just bypass EOF waiting
             return make_ready_future();
@@ -1397,6 +1438,7 @@ public:
     // This function is called to kick off the handshake.  It will obtain
     // locks on the _in_sem and _out_sem semaphores and start the handshake.
     future<> handshake() {
+        log_trace("{} handshake, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         if (_creds->need_load_system_trust()) {
             if (!SSL_CTX_set_default_verify_paths(_ctx.get())) {
                 throw make_ossl_error(
@@ -1418,6 +1460,7 @@ public:
     }
 
     future<> shutdown() {
+        log_trace("{} shutdown, _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         // first, make sure any pending write is done.
         // bye handshake is a flush operation, but this
         // allows us to not pay extra attention to output state
@@ -1437,6 +1480,7 @@ public:
     }
 
     void close() noexcept override {
+        log_trace("{} close _error: {}, _shutdown: {}, eof: {}, connected: {}", *this, _error, _shutdown, eof(), connected());
         // only do once.
         if (!std::exchange(_shutdown, true)) {
             // running in background. try to bye-handshake us nicely, but after 10s we forcefully close.
@@ -1549,6 +1593,13 @@ public:
             i2d_SSL_SESSION(sess, &data_ptr);
             return data;
         });
+    }
+
+    const sstring& local_address() const {
+        return _local_address;
+    }
+    const sstring& remote_address() const {
+        return _remote_address;
     }
 
 private:
@@ -1812,8 +1863,47 @@ private:
     BIO* in_bio() { return SSL_get_rbio(_ssl.get()); }
     BIO* out_bio() { return SSL_get_wbio(_ssl.get()); }
 
+    template <typename... Args>
+    void log_error(logger::format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log_msg(log_level::error, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void log_warning(logger::format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log_msg(log_level::warn, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void log_info(logger::format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log_msg(log_level::info, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void log_debug(logger::format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log_msg(log_level::debug, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void log_trace(logger::format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log_msg(log_level::trace, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void log_msg(log_level l, logger::format_info_t<Args...> fmt, Args&&... args) noexcept {
+        while(_log_messages.size() >= max_log_message_buffer_size) {
+            _log_messages.pop_front();
+        }
+        auto msg = fmt::format(fmt.format, std::forward<Args>(args)...);
+        _log_messages.emplace_back(std::move(msg));
+        tls_log.log(l, "{}", _log_messages.back());
+
+    }
+
+
 private:
     std::unique_ptr<net::connected_socket_impl> _sock;
+    sstring _local_address;
+    sstring _remote_address;
     shared_ptr<tls::certificate_credentials::impl> _creds;
     data_source _in;
     data_sink _out;
@@ -1830,6 +1920,8 @@ private:
     session_type _type;
     bool _eof = false;
     bool _shutdown = false;
+
+    circular_buffer<sstring> _log_messages;
 
     friend int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written);
     friend int bio_read_ex(BIO* b, char * data, size_t dlen, size_t *readbytes);
@@ -1957,6 +2049,7 @@ int bio_create(BIO*) {
 /// and set the retry write flag.
 int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     auto session = unwrap_bio_ptr(b);
+    session->log_trace("{} bio_write_ex: data size: {}, _output_pending available: {}, _output_pending failed: {}, connected: {}", *session, dlen, session->_output_pending.available(), session->_output_pending.failed(), session->connected());
     BIO_clear_retry_flags(b);
 
     if (!session->_output_pending.available()) {
@@ -1984,9 +2077,11 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
         
         return 1;
     } catch(const std::system_error & e) {
+        session->log_debug("{}: system error during write: {}", *session, e.what());
         ERR_raise_data(ERR_LIB_SYS, e.code().value(), e.what());
         session->_output_pending = make_exception_future<>(std::current_exception());
     } catch(...) {
+        session->log_debug("{}: error during write: {}", *session, std::current_exception());
         ERR_raise(ERR_LIB_SYS, EIO);
         session->_output_pending = make_exception_future<>(std::current_exception());
     }
@@ -2002,6 +2097,7 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
 /// the _input buffer and return it to the caller.
 int bio_read_ex(BIO* b, char * data, size_t dlen, size_t *readbytes) {
     auto session = unwrap_bio_ptr(b);
+    session->log_trace("{} bio_read_ex: data size: {}, _input size: {}, eof: {}, connected: {}", *session, dlen, session->_input.size(), session->eof(), session->connected());
     BIO_clear_retry_flags(b);
     if (session->eof()) {
         BIO_set_flags(b, BIO_FLAGS_IN_EOF);
@@ -2085,6 +2181,13 @@ future<connected_socket> tls::wrap_server(shared_ptr<server_credentials> cred, c
 }
 
 } // namespace seastar
+
+auto fmt::formatter<seastar::tls::session>::format(
+    const seastar::tls::session& s, fmt::format_context& ctx) const -> decltype(ctx.out()) {
+
+    return fmt::format_to(ctx.out(), "{}:{} - ", s.local_address(), s.remote_address());
+}
+
 
 const int seastar::tls::ERROR_UNKNOWN_COMPRESSION_ALGORITHM = ERR_PACK(
   ERR_LIB_SSL, 0, SSL_R_UNSUPPORTED_COMPRESSION_ALGORITHM);

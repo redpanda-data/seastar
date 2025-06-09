@@ -67,6 +67,7 @@ public:
     virtual future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) = 0;
     virtual future<bool> is_resumed() = 0;
     virtual future<session_data> get_session_resume_data() = 0;
+    virtual const circular_buffer<sstring>& get_tls_log_buffer() const = 0;
 };
 
 struct session_ref {
@@ -154,6 +155,9 @@ public:
     }
     future<session_data> get_session_resume_data() {
         return _session->get_session_resume_data();
+    }
+    const circular_buffer<sstring>& get_tls_log_buffer() const {
+        return _session->get_tls_log_buffer();
     }
 };
 

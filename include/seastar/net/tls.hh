@@ -20,6 +20,7 @@
  */
 #pragma once
 
+#include "seastar/core/circular_buffer.hh"
 #ifndef SEASTAR_MODULE
 #include <functional>
 #include <unordered_set>
@@ -596,6 +597,8 @@ namespace tls {
      * delay this call to sometime before shutting down/closing the socket.
     */
     future<session_data> get_session_resume_data(connected_socket&);
+
+    const circular_buffer<sstring> & get_tls_log_buffer(connected_socket&);
 
     std::ostream& operator<<(std::ostream&, const subject_alt_name::value_type&);
     std::ostream& operator<<(std::ostream&, const subject_alt_name&);
