@@ -311,6 +311,8 @@ namespace tls {
          */
         std::optional<std::vector<cert_info>> get_trust_list_info() const noexcept;
 
+        void set_alpn_protocols(const std::vector<sstring>& protocols);
+
         /// TODO(rob) comment these
         void enable_load_system_trust();
         void set_client_auth(client_auth);

@@ -217,6 +217,19 @@ static tls::certificate_data get_der_certificate_data(X509* cert) {
     return result;
 }
 
+std::vector<unsigned char> make_ossl_alpn_proto_data(const std::vector<sstring>& protocols) {
+    std::vector<unsigned char> alpn_data;
+    for(const sstring& proto : protocols) {
+        if(proto.empty() || proto.size() > 255) {
+            throw std::invalid_argument(fmt::format("ALPN protocol '{}' is invalid", proto));
+        }
+        alpn_data.push_back(static_cast<unsigned char>(proto.size()));
+        std::copy(proto.begin(), proto.end(),
+                    std::back_inserter(alpn_data));
+    }
+    return alpn_data;
+}
+
 template<typename T, auto fn>
 struct ssl_deleter {
     void operator()(T* ptr) { fn(ptr); }
@@ -678,6 +691,10 @@ public:
         return _cert_and_key;
     }
 
+    void set_alpn_protocols(const std::vector<sstring>& protocols) {
+        _alpn_protocols = protocols;
+    }
+
 private:
     friend class certificate_credentials;
     friend class credentials_builder;
@@ -707,7 +724,7 @@ private:
     bool _enable_server_precedence = false;
     bool _enable_tls_renegotiation = false;
     bool _crl_check_flag_set = false;
-
+    std::vector<sstring> _alpn_protocols;
 };
 
 tls::certificate_credentials::certificate_credentials()
@@ -813,6 +830,11 @@ void tls::certificate_credentials::set_session_resume_mode(session_resume_mode m
     _impl->set_session_resume_mode(m);
 }
 
+void tls::certificate_credentials::set_alpn_protocols(const std::vector<sstring>& protocols) {
+    _impl->set_alpn_protocols(protocols);
+}
+
+
 tls::server_credentials::server_credentials()
     : server_credentials(dh_params{})
 {}
@@ -832,6 +854,11 @@ tls::server_credentials& tls::server_credentials::operator=(
 void tls::server_credentials::set_client_auth(client_auth ca) {
     _impl->set_client_auth(ca);
 }
+
+void tls::server_credentials::set_alpn_protocols(const std::vector<sstring>& protocols) {
+    _impl->set_alpn_protocols(protocols);
+}
+
 
 namespace tls {
 
@@ -854,6 +881,27 @@ class session : public enable_shared_from_this<session>, public session_impl {
 public:
     using buf_type = temporary_buffer<char>;
     using frag_iter = net::fragment*;
+
+    static int select_alpn_protocol(SSL *ssl, const unsigned char **out,
+                        unsigned char *outlen, const unsigned char *client_protos,
+                        unsigned int client_proto_len, void* configured_protocols) {
+        const std::vector<unsigned char>& server_protos = *reinterpret_cast<std::vector<unsigned char>*>(configured_protocols);
+
+        auto result =  SSL_select_next_proto(const_cast<unsigned char **>(out), 
+            outlen, server_protos.data(), server_protos.size(), 
+            client_protos, client_proto_len);
+        if(result == OPENSSL_NPN_NEGOTIATED) {
+            return SSL_TLSEXT_ERR_OK;
+        } else if(result == OPENSSL_NPN_NO_OVERLAP) {
+            *outlen = 0;
+            *out = nullptr;
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
+        } else {
+            *outlen = 0;
+            *out = nullptr;
+            return SSL_TLSEXT_ERR_NOACK;
+        }
+    }
 
     session(session_type t, shared_ptr<tls::certificate_credentials> creds,
             std::unique_ptr<net::connected_socket_impl> sock, tls_options options = {})
@@ -1689,7 +1737,19 @@ private:
             }
             return res;
         });
-  }
+    }
+
+    future<std::optional<sstring>> get_selected_alpn_protocol() override {
+        return state_checked_access([this]() -> std::optional<sstring> {
+            const unsigned char *data = nullptr;
+            unsigned int len = 0;
+            SSL_get0_alpn_selected(_ssl.get(), &data, &len);
+            if(len > 0) {
+                return std::make_optional<sstring>(reinterpret_cast<const char*>(data), len);
+            }
+            return std::nullopt;
+        });
+    }
 
     using is_verification_error = bool_class<struct is_verification_error_tag>;
 
@@ -1832,6 +1892,22 @@ private:
                     fmt::format(
                         "Failed to set ciphersuites '{}'", _creds->get_ciphersuites()));
             }
+        }      
+        const auto& alpn_protocols = type == session_type::CLIENT ? _options.alpn_protocols : _creds->_alpn_protocols;
+        // ALPN setup
+        if(!alpn_protocols.empty()){
+            // Build the ALPN protocol data in the format expected by OpenSSL
+            // The format is a sequence of length-prefixed strings
+            _alpn_protocols = make_ossl_alpn_proto_data(alpn_protocols);
+            if(type == session_type::CLIENT) {
+                auto err = SSL_CTX_set_alpn_protos(ssl_ctx.get(),
+                    _alpn_protocols.data(), _alpn_protocols.size());
+                if (err != 0) {
+                    throw make_ossl_error(fmt::format("Failed to set ALPN protocols - error: {}", err));
+                }
+            } else {
+                SSL_CTX_set_alpn_select_cb(ssl_ctx.get(), select_alpn_protocol, &_alpn_protocols);
+            }
         }
 
         return ssl_ctx;
@@ -1877,11 +1953,17 @@ private:
 
     future<> _output_pending;
     buf_type _input;
+    // ALPN protocols in OPENSSL format
+    // This is a sequence of length-prefixed strings, where the first byte is the length
+    // of the first string, followed by the string data, then the length of the second string,
+    // followed by the second string data, and so on.
+    std::vector<unsigned char> _alpn_protocols;
     ssl_ctx_ptr _ctx;
     ssl_ptr _ssl;
     session_type _type;
     bool _eof = false;
     bool _shutdown = false;
+
 
     friend int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written);
     friend int bio_read_ex(BIO* b, char * data, size_t dlen, size_t *readbytes);
