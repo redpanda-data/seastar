@@ -730,6 +730,10 @@ const circular_buffer<sstring> & get_tls_log_buffer(connected_socket& socket) {
     return get_tls_socket(socket)->get_tls_log_buffer();
 }
 
+const tls::tls_session_stats& get_tls_session_stats(connected_socket& socket) {
+    return get_tls_socket(socket)->get_tls_session_stats();
+}
+
 std::string_view tls::format_as(subject_alt_name_type type) {
     switch (type) {
         case subject_alt_name_type::dnsname:

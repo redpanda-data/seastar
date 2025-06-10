@@ -21,6 +21,7 @@
 #pragma once
 
 #include "seastar/core/circular_buffer.hh"
+#include "seastar/core/lowres_clock.hh"
 #ifndef SEASTAR_MODULE
 #include <functional>
 #include <unordered_set>
@@ -58,6 +59,40 @@ class socket_address;
  */
 SEASTAR_MODULE_EXPORT
 namespace tls {
+
+    struct tls_session_stats {
+        /// Raw number of bytes received off the wire
+        size_t num_bytes_recv = 0;
+        /// Raw number of bytes sent over the wire
+        size_t num_bytes_sent = 0;
+        /// Number of times handshake was requested
+        size_t num_handshakes_requested = 0;
+        /// Number of times handshake succeeded
+        size_t num_handshakes_succeeded = 0;
+        /// Number of times handshake failed
+        size_t num_handshakes_failed = 0;
+        /// Number of times, user requuested to 'put' data
+        size_t num_puts_requested = 0;
+        /// Number of times 'put' succeeded
+        size_t num_puts_succeeded = 0;
+        /// Number of times 'put' failed
+        size_t num_puts_failed = 0;
+        /// Number of times a user requested to 'get' data
+        size_t num_gets_requested = 0;
+        /// Number of times 'get' succeeded
+        size_t num_gets_succeeded = 0;
+        /// Number of times 'get'failed
+        size_t num_gets_failed = 0;
+        lowres_system_clock::time_point last_handshake_requested = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_handshake_succeeded = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_handshake_failed = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_put_requested = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_put_succeeded = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_put_failed = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_get_requested = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_get_succeeded = lowres_system_clock::time_point::min();
+        lowres_system_clock::time_point last_get_failed = lowres_system_clock::time_point::min();
+    };
 
     enum class x509_crt_format {
         DER,
@@ -599,6 +634,7 @@ namespace tls {
     future<session_data> get_session_resume_data(connected_socket&);
 
     const circular_buffer<sstring> & get_tls_log_buffer(connected_socket&);
+    const tls_session_stats & get_tls_session_stats(connected_socket&);
 
     std::ostream& operator<<(std::ostream&, const subject_alt_name::value_type&);
     std::ostream& operator<<(std::ostream&, const subject_alt_name&);

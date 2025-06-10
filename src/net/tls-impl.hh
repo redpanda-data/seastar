@@ -68,6 +68,7 @@ public:
     virtual future<bool> is_resumed() = 0;
     virtual future<session_data> get_session_resume_data() = 0;
     virtual const circular_buffer<sstring>& get_tls_log_buffer() const = 0;
+    virtual const tls_session_stats& get_tls_session_stats() const = 0;
 };
 
 struct session_ref {
@@ -158,6 +159,9 @@ public:
     }
     const circular_buffer<sstring>& get_tls_log_buffer() const {
         return _session->get_tls_log_buffer();
+    }
+    const tls_session_stats& get_tls_session_stats() const {
+        return _session->get_tls_session_stats();
     }
 };
 

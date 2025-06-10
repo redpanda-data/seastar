@@ -924,6 +924,10 @@ public:
         return _log_messages;
     }
 
+    const tls_session_stats& get_tls_session_stats() const override {
+        return _stats;
+    }
+
     // This function waits for the _output_pending future to resolve
     // If an error occurs, it is saved off into _error and returned
     future<> wait_for_output() {
@@ -1078,17 +1082,32 @@ public:
             p.linearize();
         }
         return with_semaphore(_out_sem, 1, [this, p = std::move(p)]() mutable {
+            _stats.num_puts_requested++;
+            _stats.last_put_requested = lowres_system_clock::now();
             return do_put(std::move(p));
         }).then([this](net::packet p) {
             if (eof() || p.len() == 0) {
+                if (eof()) {
+                    _stats.num_puts_failed++;
+                    _stats.last_put_failed = lowres_system_clock::now();
+                } else {
+                    _stats.num_puts_succeeded++;
+                    _stats.last_put_succeeded = lowres_system_clock::now();
+                }
                 log_trace("{} put: eof: {}, p.len: {}", *this, eof(), p.len());
                 return make_ready_future();
             } else {
+                _stats.num_puts_failed++;
+                _stats.last_put_failed = lowres_system_clock::now();
                 log_trace("{} put: re-handshake with p.len: {}", *this, p.len());
                 return handshake().then([this, p = std::move(p)]() mutable {
                     return put(std::move(p));
                 });
             }
+        }).handle_exception([this](auto ep) {
+            _stats.num_puts_failed++;
+            _stats.last_put_failed = lowres_system_clock::now();
+            return make_exception_future<>(ep);
         });
     }
 
@@ -1189,6 +1208,7 @@ public:
               // Set EOF if it's empty
               _eof |= buf.empty();
               _input = std::move(buf);
+              _stats.num_bytes_recv += buf.size();
           })
           .handle_exception([this](auto ep) {
             log_debug("{} wait_for_input error: {}", *this, ep);
@@ -1297,13 +1317,24 @@ public:
         if (!connected()) {
             return handshake().then(std::bind(&session::get, this));
         }
-        return with_semaphore(_in_sem, 1, std::bind(&session::do_get, this))
-          .then([this](buf_type buf) {
+        return with_semaphore(_in_sem, 1, [this] {
+            _stats.num_gets_requested++;
+            _stats.last_get_requested = lowres_system_clock::now();
+            return do_get();
+        }).then([this](buf_type buf) {
               if (buf.empty() && !eof()) {
+                  _stats.num_gets_failed++;
+                  _stats.last_get_failed = lowres_system_clock::now();
                   log_trace("{} get: empty buf, re-handshake", *this);
                   return handshake().then(std::bind(&session::get, this));
               }
+              _stats.num_gets_succeeded++;
+              _stats.last_get_succeeded = lowres_system_clock::now();
               return make_ready_future<buf_type>(std::move(buf));
+          }).handle_exception([this](auto ep) {
+              _stats.num_gets_failed++;
+              _stats.last_get_failed = lowres_system_clock::now();
+              return make_exception_future<buf_type>(ep);
           });
     }
 
@@ -1449,10 +1480,17 @@ public:
 
         return with_semaphore(_in_sem, 1, [this] {
             return with_semaphore(_out_sem, 1, [this] {
-                return do_handshake().handle_exception([this](auto ep) {
+                _stats.num_handshakes_requested++;
+                _stats.last_handshake_requested = lowres_system_clock::now();
+                return do_handshake().then([this] {
+                    _stats.num_handshakes_succeeded++;
+                    _stats.last_handshake_succeeded = lowres_system_clock::now();
+                }).handle_exception([this](auto ep) {
                     if (!_error) {
                         _error = ep;
                     }
+                    _stats.num_handshakes_failed++;
+                    _stats.last_handshake_failed = lowres_system_clock::now();
                     return make_exception_future<>(_error);
                 });
             });
@@ -1922,6 +1960,7 @@ private:
     bool _shutdown = false;
 
     circular_buffer<sstring> _log_messages;
+    tls_session_stats _stats;
 
     friend int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written);
     friend int bio_read_ex(BIO* b, char * data, size_t dlen, size_t *readbytes);
@@ -2064,6 +2103,7 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
             scattered_message<char> msg;
             msg.append(std::string_view(data, dlen));
             n = msg.size();
+            session->_stats.num_bytes_sent += n;
             session->_output_pending = session->_out.put(std::move(msg).release());
         }
 
