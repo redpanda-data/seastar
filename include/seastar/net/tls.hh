@@ -635,6 +635,7 @@ namespace tls {
 
     const circular_buffer<sstring> & get_tls_log_buffer(connected_socket&);
     const tls_session_stats & get_tls_session_stats(connected_socket&);
+    sstring get_tls_state(connected_socket&);
 
     std::ostream& operator<<(std::ostream&, const subject_alt_name::value_type&);
     std::ostream& operator<<(std::ostream&, const subject_alt_name&);

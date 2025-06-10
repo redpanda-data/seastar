@@ -830,6 +830,8 @@ int session_ticket_cb(SSL * s, unsigned char key_name[16],
                       unsigned char iv[EVP_MAX_IV_LENGTH],
                       EVP_CIPHER_CTX * ctx, EVP_MAC_CTX *hctx, int enc);
 
+void ssl_info_callback(const SSL*, int, int);
+
 /**
  * Session wraps an OpenSSL SSL session and context,
  * and is the actual conduit for an TLS/SSL data flow.
@@ -872,6 +874,7 @@ public:
         if (1 != SSL_set_ex_data(_ssl.get(), SSL_EX_DATA_SESSION, this)) {
             throw make_ossl_error("Failed to set EX data for SSL session");
         }
+        SSL_set_info_callback(_ssl.get(), ssl_info_callback);
         bio_ptr in_bio(BIO_new(get_method()));
         bio_ptr out_bio(BIO_new(get_method()));
         if (!in_bio || !out_bio) {
@@ -926,6 +929,11 @@ public:
 
     const tls_session_stats& get_tls_session_stats() const override {
         return _stats;
+    }
+
+    sstring get_tls_state() const override {
+        return fmt::format("SSL_state: '{}', SSL_rstate: '{}'", SSL_state_string_long(_ssl.get()),
+                           SSL_rstate_string_long(_ssl.get()));
     }
 
     // This function waits for the _output_pending future to resolve
@@ -1967,6 +1975,7 @@ private:
     friend long bio_ctrl(BIO * b, int ctrl, long num, void * data);
     friend int session_ticket_cb(SSL*, unsigned char[16], unsigned char[EVP_MAX_IV_LENGTH],
                                  EVP_CIPHER_CTX*, EVP_MAC_CTX*, int);
+    friend void ssl_info_callback(const SSL*, int, int);
 };
 
 // The following callback function is used whenever session tickets are generated or received by
@@ -2023,6 +2032,46 @@ int session_ticket_cb(SSL * s, unsigned char key_name[16],
         }
         return 1;
     }
+}
+
+void ssl_info_callback(const SSL* ssl, int where, int ret) {
+    auto * sess = static_cast<session *>(SSL_get_ex_data(ssl, SSL_EX_DATA_SESSION));
+    if (sess == nullptr) {
+        return;
+    }
+
+    sstring where_str;
+    int w = where & ~SSL_ST_MASK;
+    if (w & SSL_ST_CONNECT) {
+        where_str = "SSL_ST_CONNECT";
+    } else if (w & SSL_ST_ACCEPT) {
+        where_str = "SSL_ST_ACCEPT";
+    } else {
+        where_str = "unknown";
+    }
+
+    sstring info;
+
+    if (where & SSL_CB_LOOP) {
+        info = fmt::format("{}:{}", where_str, SSL_state_string_long(ssl));
+    } else if (where & SSL_CB_ALERT) {
+        where_str = (where & SSL_CB_READ) ? "read" : "write";
+        info = fmt::format("SSL3 alert {}:{}:{}", where_str, SSL_alert_type_string_long(ret), SSL_alert_desc_string_long(ret));
+    } else if (where & SSL_CB_EXIT) {
+        if (ret == 0) {
+            info = fmt::format("{} failed in {}", where_str, SSL_state_string_long(ssl));
+        } else if (ret < 0) {
+            info = fmt::format("{} error in {}", where_str, SSL_state_string_long(ssl));
+        }
+    } else if (where & SSL_CB_HANDSHAKE_START) {
+        info = fmt::format("{} handshake start", where_str);
+    } else if (where & SSL_CB_HANDSHAKE_DONE) {
+        info = fmt::format("{} handshake done", where_str);
+    } else {
+        info = fmt::format("unknown callback: {}:{}", where, ret);
+    }
+
+    sess->log_trace("{} {}", *sess, info);
 }
 
 
