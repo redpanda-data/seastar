@@ -223,6 +223,7 @@ void tls::credentials_builder::set_session_resume_mode(session_resume_mode m) {
     _session_resume_mode = m;
 }
 
+
 #ifndef SEASTAR_WITH_TLS_OSSL
 void tls::credentials_builder::set_priority_string(const sstring& prio) {
     _priority = prio;
@@ -331,6 +332,9 @@ void tls::credentials_builder::apply_to(certificate_credentials& creds) const {
 
     creds.set_client_auth(_client_auth);
     creds.set_session_resume_mode(_session_resume_mode);
+    if (!_alpn_protocols.empty()) {
+        creds.set_alpn_protocols(_alpn_protocols);
+    }
 }
 
 shared_ptr<tls::certificate_credentials> tls::credentials_builder::build_certificate_credentials() const {
@@ -756,6 +760,10 @@ future<tls::session_data> tls::get_session_resume_data(connected_socket& socket)
 
 future<std::vector<tls::certificate_data>> tls::get_peer_certificate_chain(connected_socket& socket) {
     return get_tls_socket(socket)->get_peer_certificate_chain();
+}
+
+future<std::optional<sstring>> tls::get_selected_alpn_protocol(connected_socket& socket) {
+    return get_tls_socket(socket)->get_selected_alpn_protocol();
 }
 
 std::string_view tls::format_as(subject_alt_name_type type) {

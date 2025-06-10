@@ -632,6 +632,10 @@ void tls::server_credentials::set_session_resume_mode(session_resume_mode m) {
     _impl->set_session_resume_mode(m);
 }
 
+void tls::server_credentials::set_alpn_protocols(const std::vector<sstring>& protocols) {
+    _impl->set_alpn_protocols(protocols);
+}
+
 
 namespace tls {
 
@@ -1381,7 +1385,7 @@ public:
         });
     }
 
-    future<std::optional<sstring>> get_selected_alpn_protocol() {
+    future<std::optional<sstring>> get_selected_alpn_protocol() override {
         return state_checked_access([this]() -> std::optional<sstring> {
             gnutls_datum_t selected_proto_datum = { nullptr, 0 };
             int rv = gnutls_alpn_get_selected_protocol(*this, &selected_proto_datum);

@@ -59,6 +59,7 @@ public:
     virtual future<std::vector<subject_alt_name>> get_alt_name_information(std::unordered_set<subject_alt_name_type>) = 0;
     virtual future<bool> is_resumed() = 0;
     virtual future<session_data> get_session_resume_data() = 0;
+    virtual future<std::optional<sstring>> get_selected_alpn_protocol() = 0;
 };
 
 struct session_ref {
@@ -151,6 +152,10 @@ public:
     }
     future<session_data> get_session_resume_data() {
         return _session->get_session_resume_data();
+    }
+
+    future<std::optional<sstring>> get_selected_alpn_protocol() {
+        return _session->get_selected_alpn_protocol();
     }
 };
 
