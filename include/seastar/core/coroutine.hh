@@ -49,9 +49,9 @@ public:
         promise_type(promise_type&&) = delete;
         promise_type(const promise_type&) = delete;
 
-        template<typename... U>
-        void return_value(U&&... value) {
-            _promise.set_value(std::forward<U>(value)...);
+        template<typename U>
+        void return_value(U&& value) {
+            _promise.set_value(internal::implicit_tag{}, std::forward<U>(value));
         }
 
         void return_value(coroutine::exception ce) noexcept {
