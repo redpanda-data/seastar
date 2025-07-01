@@ -60,6 +60,9 @@ macro (seastar_add_test name)
   set (${name}_test ${target})
 endmacro ()
 
+seastar_add_test (abort_source
+  SOURCES abort_source_perf.cc)
+
 seastar_add_test (fstream
   SOURCES fstream_perf.cc
   NO_SEASTAR_PERF_TESTING_LIBRARY)
