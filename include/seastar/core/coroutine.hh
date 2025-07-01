@@ -49,9 +49,11 @@ public:
         promise_type(promise_type&&) = delete;
         promise_type(const promise_type&) = delete;
 
-        template<typename... U>
-        void return_value(U&&... value) {
-            _promise.set_value(std::forward<U>(value)...);
+        template<typename U>
+        void return_value(U&& value) {
+            using From = decltype(std::forward<U>(value));
+            static_assert(std::is_convertible_v<From, T>, "only implicit conversions are considered");
+            _promise.set_value(std::forward<U>(value));
         }
 
         void return_value(coroutine::exception ce) noexcept {
