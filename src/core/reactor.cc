@@ -205,6 +205,7 @@ struct disk_params {
     uint64_t write_saturation_length = std::numeric_limits<uint64_t>::max();
     bool duplex = false;
     float rate_factor = 1.0;
+    bool max_cost_function = true;
 };
 
 }
@@ -234,6 +235,9 @@ struct convert<seastar::disk_params> {
         }
         if (node["rate_factor"]) {
             mp.rate_factor = node["rate_factor"].as<float>();
+        }
+        if (node["max_cost_function"]) {
+            mp.max_cost_function = node["max_cost_function"].as<bool>();
         }
         return true;
     }
@@ -4407,6 +4411,7 @@ public:
         cfg.write_bytes_rate = p.write_bytes_rate;
         cfg.read_req_rate = p.read_req_rate;
         cfg.write_req_rate = p.write_req_rate;
+        cfg.max_cost_function = p.max_cost_function;
 
         return cfg;
     }
