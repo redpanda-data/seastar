@@ -1,1 +1,0 @@
-module(name = "seastar", version = "1.0")
