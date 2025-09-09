@@ -621,7 +621,7 @@ struct future_state :  public future_state_base, private internal::uninitialized
     }
     void set_strict(T v) {
         assert(_u.st == state::future);
-        new (this) future_state(ready_future_marker(), std::forward<T>(v));
+        new (this) future_state(strict_type_ready_future_marker(), std::forward<T>(v));
     }
     template <typename... A>
     void set(A&&... a) noexcept {
