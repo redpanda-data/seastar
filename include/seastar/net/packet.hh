@@ -237,7 +237,10 @@ public:
         return *this;
     }
 
-    unsigned len() const noexcept { return _impl->_len; }
+    unsigned len() const noexcept {
+        SEASTAR_ASSERT(_impl);
+        return _impl->_len;
+    }
     unsigned memory() const noexcept { return len() +  sizeof(packet::impl); }
 
     fragment frag(unsigned idx) const noexcept { return _impl->_frags[idx]; }
