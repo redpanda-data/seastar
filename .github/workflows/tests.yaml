@@ -36,6 +36,10 @@ jobs:
       mode: release
       enables: --enable-dpdk
       options: --cook dpdk
+    # disable dpdk build as we don't use it an it is
+    # long and breaks now and then: it still runs
+    # upstream
+    if: false
   build_with_cxx_modules:
     name: "Test with C++20 modules enabled"
     uses: ./.github/workflows/test.yaml
