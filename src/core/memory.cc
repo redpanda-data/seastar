@@ -1038,6 +1038,7 @@ maybe_disable_transparent_hugepages(void* addr, size_t len) {
 void cpu_pages::free_large(void* ptr) {
     pageidx idx = (reinterpret_cast<char*>(ptr) - mem()) / page_size;
     page* span = &pages[idx];
+    std::memset(ptr, 0, span->span_size * page_size);
 #ifdef SEASTAR_HEAPPROF
     if (span->alloc_site) {
         auto alloc_site = span->alloc_site;
@@ -1487,6 +1488,7 @@ small_pool::allocate() {
 
 void
 small_pool::deallocate(void* object) {
+    std::memset(object, 0, _object_size);
     auto o = reinterpret_cast<free_object*>(object);
     o->next = _free;
     _free = o;

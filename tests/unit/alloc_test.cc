@@ -814,3 +814,39 @@ SEASTAR_TEST_CASE(c23_free_sized) {
     free_aligned_sized(p2, 1024, 4096);
     return make_ready_future<>();
 }
+
+SEASTAR_TEST_CASE(test_memzero_on_free) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+    {
+        auto small_size = 8;
+        auto p_small = static_cast<unsigned char*>(malloc(small_size));
+        BOOST_REQUIRE(p_small != nullptr);
+        std::memset(p_small, 0xab, small_size);
+        BOOST_REQUIRE(std::all_of(p_small, p_small + small_size,
+                                [](auto c) { return c == 0xab; }));
+        free(p_small);
+
+        // object will be recast to free_object struct, so need to check that separately
+        BOOST_REQUIRE(std::all_of(p_small, p_small + sizeof(void*),
+                                [](auto c) { return c != 0xab; }));
+        BOOST_REQUIRE(std::all_of(p_small + sizeof(void*), p_small + small_size,
+                                [](auto c) { return c == 0; }));
+    }
+
+    {
+        auto large_size = 128 * 1024;
+        auto p_large = static_cast<unsigned char*>(malloc(large_size));
+        BOOST_REQUIRE(p_large != nullptr);
+        std::memset(p_large, 0xab, large_size);
+        BOOST_REQUIRE(std::all_of(p_large, p_large + large_size,
+                                [](auto c) { return c == 0xab; }));
+        free(p_large);
+
+        BOOST_REQUIRE(std::all_of(p_large, p_large + large_size,
+                                [](auto c) { return c == 0; }));
+    }
+
+#pragma GCC diagnostic pop
+    return make_ready_future<>();
+}
