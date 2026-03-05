@@ -725,12 +725,14 @@ class json_printer final : public result_printer {
     std::unordered_map<std::string,
                        std::unordered_map<std::string,
                                           std::unordered_map<std::string, double>>> _root;
+    std::unordered_map<std::string, double> _summary;
 public:
     explicit json_printer(const std::string& file) : _output_file(file) { }
 
     ~json_printer() {
         std::ofstream out(_output_file);
-        out << json::formatter::to_json(_root);
+        out << "{\"results\":" << json::formatter::to_json(_root["results"])
+            << ",\"summary\":"  << json::formatter::to_json(_summary) << "}";
     }
 
     virtual void print_configuration(const config&) override { }
@@ -746,7 +748,7 @@ public:
     }
 
     virtual void print_summary(clock_type::duration total_duration) override {
-        _root["summary"]["total_runtime_s"] = std::chrono::duration<double>(total_duration).count();
+        _summary["total_runtime_s"] = std::chrono::duration<double>(total_duration).count();
     }
 };
 
