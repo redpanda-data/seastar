@@ -746,7 +746,7 @@ public:
     }
 
     virtual void print_summary(clock_type::duration total_duration) override {
-        _root["summary"]["total_runtime_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(total_duration).count();
+        _root["summary"]["total_runtime_s"] = std::chrono::duration<double>(total_duration).count();
     }
 };
 
