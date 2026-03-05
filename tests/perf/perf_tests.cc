@@ -150,6 +150,7 @@ class time_measurement {
     linux_perf_event _instructions_retired_counter = linux_perf_event::user_instructions_retired();
     linux_perf_event _cpu_cycles_retired_counter = linux_perf_event::user_cpu_cycles_retired();
 
+    bool _perf_counters_enabled = false;
     uint64_t _start_stop_count = 0;
 
     // Calibrated cost of a single start_measuring_time()/stop_measuring_time() pair
@@ -157,12 +158,18 @@ class time_measurement {
     clock_type::duration _start_stop_overhead_external{0}; // external clock measurement (for comparison)
 
 public:
+    void set_perf_counters_enabled(bool enabled) {
+        _perf_counters_enabled = enabled;
+    }
+
     void enable_counters() {
+        if (!_perf_counters_enabled) { return; }
         _instructions_retired_counter.enable();
         _cpu_cycles_retired_counter.enable();
     }
 
     void disable_counters() {
+        if (!_perf_counters_enabled) { return; }
         _instructions_retired_counter.disable();
         _cpu_cycles_retired_counter.disable();
     }
@@ -174,15 +181,19 @@ public:
         auto t = clock_type::now();
         _run_start_time = t;
         _start_time = t;
-        _start_stats = perf_stats::snapshot(&_instructions_retired_counter, &_cpu_cycles_retired_counter);
+        auto* inst = _perf_counters_enabled ? &_instructions_retired_counter : nullptr;
+        auto* cyc  = _perf_counters_enabled ? &_cpu_cycles_retired_counter   : nullptr;
+        _start_stats = perf_stats::snapshot(inst, cyc);
     }
 
     performance_test::run_result stop_run() {
         auto t = clock_type::now();
+        auto* inst = _perf_counters_enabled ? &_instructions_retired_counter : nullptr;
+        auto* cyc  = _perf_counters_enabled ? &_cpu_cycles_retired_counter   : nullptr;
         performance_test::run_result ret;
         if (_start_time == _run_start_time) {
             ret.duration = t - _start_time;
-            auto stats = perf_stats::snapshot(&_instructions_retired_counter, &_cpu_cycles_retired_counter);
+            auto stats = perf_stats::snapshot(inst, cyc);
             ret.stats = stats - _start_stats;
         } else {
             ret.duration = _total_time;
@@ -195,14 +206,17 @@ public:
     void start_iteration() {
         ++_start_stop_count;
         _start_time = clock_type::now();
-        _start_stats = perf_stats::snapshot(&_instructions_retired_counter, &_cpu_cycles_retired_counter);
+        auto* inst = _perf_counters_enabled ? &_instructions_retired_counter : nullptr;
+        auto* cyc  = _perf_counters_enabled ? &_cpu_cycles_retired_counter   : nullptr;
+        _start_stats = perf_stats::snapshot(inst, cyc);
     }
 
     void stop_iteration() {
         auto t = clock_type::now();
         _total_time += t - _start_time;
-        perf_stats stats;
-        stats = perf_stats::snapshot(&_instructions_retired_counter, &_cpu_cycles_retired_counter);
+        auto* inst = _perf_counters_enabled ? &_instructions_retired_counter : nullptr;
+        auto* cyc  = _perf_counters_enabled ? &_cpu_cycles_retired_counter   : nullptr;
+        perf_stats stats = perf_stats::snapshot(inst, cyc);
         _total_stats += stats - _start_stats;
     }
 
@@ -930,11 +944,15 @@ int main(int ac, char** av)
         ("overhead-threshold", bpo::value<double>()->default_value(0.1),
             "warn if overhead exceeds this ratio (default: 0.1 = 10%)")
         ("fail-on-high-overhead", "fail the test run if any test exceeds the overhead threshold")
+        ("perf-counters", "enable hardware perf counters (inst/cycles)")
         ;
 
     return app.run(ac, av, [&] {
         return async([&] {
             signal_timer::init();
+            if (app.configuration().count("perf-counters")) {
+                measure_time.set_perf_counters_enabled(true);
+            }
             measure_time.calibrate_overhead();
 
             config conf;
