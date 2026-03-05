@@ -285,6 +285,7 @@ struct result_printer {
 
     virtual void print_configuration(const config&) = 0;
     virtual void print_result(const result&) = 0;
+    virtual void print_summary(clock_type::duration /*total_duration*/) { }
 
     void update_name_column_length(size_t length) {
         _name_column_length = std::max(1ul, length);
@@ -743,6 +744,10 @@ public:
             result[c.header] = c.to_double(r);
         }
     }
+
+    virtual void print_summary(clock_type::duration total_duration) override {
+        _root["summary"]["total_runtime_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(total_duration).count();
+    }
 };
 
 struct markdown_printer final : public text_printer {
@@ -908,10 +913,15 @@ void run_all(const std::vector<std::string>& test_patterns, config& conf) {
         rp->update_name_column_length(max_name_column_length);
         rp->print_configuration(conf);
     }
+    auto run_start = clock_type::now();
     for (auto& t : all_tests()) {
         if (match(t.get())) {
             t->run(conf);
         }
+    }
+    auto total_duration = clock_type::now() - run_start;
+    for (auto& rp : conf.printers) {
+        rp->print_summary(total_duration);
     }
 }
 
