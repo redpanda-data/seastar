@@ -946,3 +946,137 @@ SEASTAR_TEST_CASE(test_try_future) {
     co_await run_try_future_test<true>(return_ex_int, std::nullopt);
     co_await run_try_future_test<false>(return_ex_int, std::nullopt);
 }
+
+// ===== HALO (Heap Allocation eLision Optimization) tests =====
+//
+// These tests exercise coroutine call patterns that benefit from the
+// [[clang::coro_await_elidable]] annotation on future<T>.  The annotation
+// allows the compiler to elide callee coroutine frame heap allocations when
+// the callee is directly co_await-ed inside another coroutine.
+//
+// The tests verify correctness of these patterns; the actual allocation
+// elision is a compiler optimization that can be observed via benchmarks.
+
+namespace {
+
+// HALO tests use future<T> which is annotated with
+// [[clang::coro_await_elidable]].  When a coroutine returning future<T>
+// is directly co_await-ed inside another coroutine, the compiler is
+// permitted to elide the callee's coroutine frame heap allocation.
+
+// Leaf coroutine returning a ready value.
+future<int> halo_leaf(int x) {
+    co_return x + 1;
+}
+
+// Middle layer: directly co_await-s the leaf.  With HALO the leaf's
+// frame can be allocated inside this coroutine's frame.
+future<int> halo_middle(int x) {
+    co_return co_await halo_leaf(x);
+}
+
+// Top layer: directly co_await-s the middle layer.
+future<int> halo_top(int x) {
+    co_return co_await halo_middle(x);
+}
+
+// Deep chain (depth 5) to stress deeper elision.
+future<int> halo_chain_5(int x) {
+    auto a = co_await halo_leaf(x);
+    auto b = co_await halo_leaf(a);
+    auto c = co_await halo_leaf(b);
+    auto d = co_await halo_leaf(c);
+    co_return co_await halo_leaf(d);
+}
+
+// Void-returning chain to verify the void specialisation.
+future<> halo_void_leaf() {
+    co_return;
+}
+
+future<> halo_void_chain() {
+    co_await halo_void_leaf();
+    co_await halo_void_leaf();
+    co_await halo_void_leaf();
+}
+
+// Verify HALO chains work with move-only types.
+future<std::unique_ptr<int>> halo_move_only_leaf(int x) {
+    co_return std::make_unique<int>(x);
+}
+
+future<std::unique_ptr<int>> halo_move_only_chain(int x) {
+    auto p = co_await halo_move_only_leaf(x);
+    *p += 1;
+    co_return p;
+}
+
+// Verify HALO chains work when exceptions propagate through the chain.
+future<int> halo_throwing_leaf(int x) {
+    if (x < 0) {
+        throw std::runtime_error("negative");
+    }
+    co_return x + 1;
+}
+
+future<int> halo_throwing_chain(int x) {
+    co_return co_await halo_throwing_leaf(x);
+}
+
+// Template chain to verify HALO with different instantiations.
+template <typename T>
+future<T> halo_generic_leaf(T x) {
+    co_return x;
+}
+
+template <typename T>
+future<T> halo_generic_chain(T x) {
+    co_return co_await halo_generic_leaf(std::move(x));
+}
+
+} // anonymous namespace
+
+SEASTAR_TEST_CASE(test_halo_ready_chain) {
+    // A 3-level coroutine chain where every callee completes
+    // synchronously.  With HALO the intermediate frames may be
+    // elided into the caller's frame.
+    // halo_top -> halo_middle -> halo_leaf each adds 1 only at the leaf.
+    BOOST_REQUIRE_EQUAL(co_await halo_top(0), 1);
+    BOOST_REQUIRE_EQUAL(co_await halo_top(10), 11);
+    BOOST_REQUIRE_EQUAL(co_await halo_top(-1), 0);
+}
+
+SEASTAR_TEST_CASE(test_halo_deep_chain) {
+    // 5-deep sequential co_await chain.
+    BOOST_REQUIRE_EQUAL(co_await halo_chain_5(0), 5);
+    BOOST_REQUIRE_EQUAL(co_await halo_chain_5(100), 105);
+}
+
+SEASTAR_TEST_CASE(test_halo_void_chain) {
+    // Void-returning coroutine chain.
+    co_await halo_void_chain();
+}
+
+SEASTAR_TEST_CASE(test_halo_move_only) {
+    // Move-only types through the HALO chain.
+    auto p = co_await halo_move_only_chain(42);
+    BOOST_REQUIRE(p);
+    BOOST_REQUIRE_EQUAL(*p, 43);
+}
+
+SEASTAR_TEST_CASE(test_halo_exception_propagation) {
+    // Exceptions must propagate correctly through HALO-eligible chains.
+    BOOST_REQUIRE_EQUAL(co_await halo_throwing_chain(10), 11);
+    BOOST_REQUIRE_EXCEPTION(
+        (void)co_await halo_throwing_chain(-1),
+        std::runtime_error,
+        [] (auto& e) { return std::string(e.what()) == "negative"; });
+}
+
+SEASTAR_TEST_CASE(test_halo_generic_chain) {
+    // Template instantiations should work.
+    BOOST_REQUIRE_EQUAL(co_await halo_generic_chain<int>(42), 42);
+    BOOST_REQUIRE_EQUAL(co_await halo_generic_chain<double>(3.14), 3.14);
+    auto s = co_await halo_generic_chain<std::string>("hello");
+    BOOST_REQUIRE_EQUAL(s, "hello");
+}

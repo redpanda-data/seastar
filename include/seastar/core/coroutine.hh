@@ -85,6 +85,27 @@ public:
 #endif
 };
 
+/// Final-suspend awaiter for Seastar coroutines.
+///
+/// Functionally equivalent to std::suspend_never but expressed as a
+/// coroutine_handle<>-returning await_suspend.  This form gives LLVM's
+/// CoroElide pass full visibility into the destruction path, which is
+/// required for the HALO (Heap Allocation eLision Optimization) to
+/// safely pair coro.alloc with coro.free when the callee is annotated
+/// with [[clang::coro_await_elidable]].
+///
+/// Without HALO the behaviour is identical: the coroutine frame is
+/// destroyed and control continues with noop_coroutine (which returns
+/// to the caller of coroutine_handle::resume()).
+struct coroutine_final_awaiter {
+    bool await_ready() noexcept { return false; }
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
+        h.destroy();
+        return std::noop_coroutine();
+    }
+    void await_resume() noexcept {}
+};
+
 template <typename T = void>
 class coroutine_traits_base {
 public:
@@ -122,7 +143,7 @@ public:
         }
 
         std::suspend_never initial_suspend() noexcept { return { }; }
-        std::suspend_never final_suspend() noexcept { return { }; }
+        coroutine_final_awaiter final_suspend() noexcept { return { }; }
 
         virtual void run_and_dispose() noexcept override {
             auto handle = std::coroutine_handle<promise_type>::from_promise(*this);
@@ -164,7 +185,7 @@ public:
         }
 
         std::suspend_never initial_suspend() noexcept { return { }; }
-        std::suspend_never final_suspend() noexcept { return { }; }
+        coroutine_final_awaiter final_suspend() noexcept { return { }; }
 
         virtual void run_and_dispose() noexcept override {
             auto handle = std::coroutine_handle<promise_type>::from_promise(*this);

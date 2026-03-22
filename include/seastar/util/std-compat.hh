@@ -56,3 +56,63 @@ using source_location
     = std::source_location;
 
 }
+
+#if defined(__GNUC__) && !defined(__clang__)
+// GCC Workaround: Strip source_location to prevent ICE during RTL expansion.
+// See: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=114675
+#define SEASTAR_COROUTINE_LOC_PARAM
+#define SEASTAR_COROUTINE_LOC_STORE(promise) (void)0
+#else
+// Standard/Clang: Capture source location naturally.
+// Includes the leading comma to mix cleanly into argument lists.
+#define SEASTAR_COROUTINE_LOC_PARAM \
+    , std::source_location sl = std::source_location::current()
+
+#define SEASTAR_COROUTINE_LOC_STORE(promise) \
+    (promise).update_resume_point(sl)
+#endif
+
+// Coroutine HALO (Heap Allocation eLision Optimization) support.
+//
+// These macros gate LLVM attributes that enable the compiler to elide
+// coroutine frame heap allocations when a coroutine is directly co_await-ed
+// in another coroutine:
+//
+//  - SEASTAR_CORO_AWAIT_ELIDABLE: placed on the coroutine return type
+//    (e.g. future<T>). Tells the compiler that a coroutine returning this
+//    type can have its frame allocation elided when it is directly
+//    co_await-ed inside another coroutine.
+//
+//  - SEASTAR_CORO_ONLY_DESTROY_WHEN_COMPLETE: placed on the promise_type.
+//    Asserts that the coroutine will only be destroyed after running to
+//    completion (i.e. after reaching final_suspend). This is naturally
+//    true for Seastar coroutines whose final_suspend returns suspend_never,
+//    because the coroutine frame is implicitly destroyed upon completion.
+//    The annotation lets the compiler generate a simpler destroy path and
+//    is a prerequisite for safe await-elision.
+//
+// See also: Folly's FOLLY_ATTR_CLANG_CORO_AWAIT_ELIDABLE in CppAttributes.h
+// and the LLVM coroutine HALO RFC.
+#if defined(__has_cpp_attribute)
+  #if __has_cpp_attribute(clang::coro_await_elidable)
+    #define SEASTAR_CORO_AWAIT_ELIDABLE [[clang::coro_await_elidable]]
+  #else
+    #define SEASTAR_CORO_AWAIT_ELIDABLE
+  #endif
+
+  #if __has_cpp_attribute(clang::coro_only_destroy_when_complete)
+    #define SEASTAR_CORO_ONLY_DESTROY_WHEN_COMPLETE [[clang::coro_only_destroy_when_complete]]
+  #else
+    #define SEASTAR_CORO_ONLY_DESTROY_WHEN_COMPLETE
+  #endif
+
+  #if __has_cpp_attribute(clang::coro_await_elidable_argument)
+    #define SEASTAR_CORO_AWAIT_ELIDABLE_ARGUMENT [[clang::coro_await_elidable_argument]]
+  #else
+    #define SEASTAR_CORO_AWAIT_ELIDABLE_ARGUMENT
+  #endif
+#else
+  #define SEASTAR_CORO_AWAIT_ELIDABLE
+  #define SEASTAR_CORO_ONLY_DESTROY_WHEN_COMPLETE
+  #define SEASTAR_CORO_AWAIT_ELIDABLE_ARGUMENT
+#endif
