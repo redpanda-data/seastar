@@ -89,7 +89,7 @@ public:
 template <typename T = void>
 class coroutine_traits_base {
 public:
-    class promise_type final : public seastar::task, public coroutine_allocators {
+    class SEASTAR_CORO_ONLY_DESTROY_WHEN_COMPLETE promise_type final : public seastar::task, public coroutine_allocators {
         seastar::promise<T> _promise;
     public:
         promise_type() = default;
@@ -141,7 +141,7 @@ public:
 template <>
 class coroutine_traits_base<> {
 public:
-   class promise_type final : public seastar::task, public coroutine_allocators {
+   class SEASTAR_CORO_ONLY_DESTROY_WHEN_COMPLETE promise_type final : public seastar::task, public coroutine_allocators {
         seastar::promise<> _promise;
     public:
         promise_type() = default;
