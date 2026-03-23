@@ -87,21 +87,20 @@ public:
 
 /// Final-suspend awaiter for Seastar coroutines.
 ///
-/// Functionally equivalent to std::suspend_never but expressed as a
-/// coroutine_handle<>-returning await_suspend.  This form gives LLVM's
-/// CoroElide pass full visibility into the destruction path, which is
-/// required for the HALO (Heap Allocation eLision Optimization) to
-/// safely pair coro.alloc with coro.free when the callee is annotated
-/// with [[clang::coro_await_elidable]].
+/// Suspends at final_suspend and explicitly destroys the coroutine frame.
+/// This gives LLVM's HALO (Heap Allocation eLision Optimization) pass
+/// visibility into the destruction path, which is required to safely pair
+/// coro.alloc with coro.free when the callee is annotated with
+/// [[clang::coro_await_elidable]].
 ///
-/// Without HALO the behaviour is identical: the coroutine frame is
-/// destroyed and control continues with noop_coroutine (which returns
-/// to the caller of coroutine_handle::resume()).
+/// Uses void-returning await_suspend for minimal overhead: after destroying
+/// the frame, control returns directly to the caller of
+/// coroutine_handle::resume() without an extra symmetric transfer through
+/// noop_coroutine.
 struct coroutine_final_awaiter {
     bool await_ready() noexcept { return false; }
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
+    void await_suspend(std::coroutine_handle<> h) noexcept {
         h.destroy();
-        return std::noop_coroutine();
     }
     void await_resume() noexcept {}
 };
