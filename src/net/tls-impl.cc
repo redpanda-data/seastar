@@ -19,9 +19,6 @@
  * Copyright 2015 Cloudius Systems
  */
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <chrono>
 #include <filesystem>
@@ -40,9 +37,6 @@ module;
 #include <fmt/core.h>
 #include <fmt/ostream.h>
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/net/tls.hh>
 #include <seastar/core/file.hh>
 #include <seastar/core/future.hh>
@@ -51,7 +45,6 @@ module seastar;
 #include <seastar/core/reactor.hh>
 
 #include "net/tls-impl.hh"
-#endif
 
 namespace seastar {
 

@@ -32,9 +32,6 @@
 //        |                            |      |                                     |     |             |    |      (seastar socket)      |   |      |
 //        +----------------------------+      +-------------------------------------+     +-------------+    +----------------------------+   +------+
 
-#ifdef SEASTAR_MODULE
-module;
-#endif
 
 #include <boost/algorithm/string/trim.hpp>
 #include <fmt/ostream.h>
@@ -66,9 +63,6 @@ module;
 
 #include <netinet/in.h>
 
-#ifdef SEASTAR_MODULE
-module seastar;
-#else
 #include <seastar/core/gate.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/with_timeout.hh>
@@ -79,7 +73,6 @@ module seastar;
 #include <seastar/util/log.hh>
 
 #include "net/tls-impl.hh"
-#endif
 
 template <> struct fmt::formatter<seastar::tls::session> : public fmt::formatter<string_view> {
     auto format(const seastar::tls::session& s, fmt::format_context& ctx) const -> decltype(ctx.out());

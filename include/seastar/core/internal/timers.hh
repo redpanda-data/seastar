@@ -21,7 +21,6 @@
 
 #pragma once
 
-#ifndef SEASTAR_MODULE
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -29,7 +28,6 @@
 #include <functional>
 
 #include <linux/perf_event.h>
-#endif
 
 #include <seastar/core/posix.hh>
 #include <seastar/core/scheduling.hh>
