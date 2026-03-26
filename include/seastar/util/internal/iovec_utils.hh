@@ -51,7 +51,7 @@ inline size_t iovec_len(std::span<const iovec> iov) {
 // Can update some iovecs in-place
 inline std::span<iovec> iovec_trim_front(std::span<iovec> iov, size_t size) {
     unsigned pos = 0;
-    while (pos < iov.size() && size > 0) {
+    while (pos < iov.size()) {
         if (iov[pos].iov_len > size) {
             iov[pos].iov_base = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(iov[pos].iov_base) + size);
             iov[pos].iov_len -= size;
