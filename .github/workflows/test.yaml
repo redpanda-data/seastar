@@ -94,7 +94,7 @@ jobs:
             MAYBE_CCACHE_OPT="--ccache"
           fi
           ./configure.py                          \
-            --api-level=8                         \
+            --api-level=9                         \
             --c++-standard ${{ inputs.standard }} \
             --compiler $CPP                       \
             --c-compiler $CC                      \
