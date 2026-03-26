@@ -2333,14 +2333,12 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     }
 
     try {
-        size_t n;
-
         if (!session->_output_pending.failed()) {
-            scattered_message<char> msg;
-            msg.append(std::string_view(data, dlen));
-            n = msg.size();
-            session->_output_pending = session->_out.put(std::move(msg).release());
-            tls_log.trace("{} bio_write_ex: Appended {} bytes to output pending", *session, n);
+            if (dlen > 0) {
+                temporary_buffer<char> buf(data, dlen);
+                session->_output_pending = session->_out.put(std::move(buf));
+            }
+            tls_log.trace("{} bio_write_ex: Appended {} bytes to output pending", *session, dlen);
         }
 
         if (session->_output_pending.failed()) {
@@ -2349,7 +2347,7 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
         }
 
         if (written != nullptr) {
-            *written = n;
+            *written = dlen;
         }
 
         return 1;
