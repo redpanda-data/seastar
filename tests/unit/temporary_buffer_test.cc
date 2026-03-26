@@ -134,3 +134,43 @@ BOOST_AUTO_TEST_CASE(test_iovec_trim_front) {
         }
     }
 }
+
+// Reproducer for a bug where iovec_trim_front returns a non-empty span
+// when all iovecs have zero length, causing write_all to loop forever
+// since no progress is made.
+BOOST_AUTO_TEST_CASE(test_iovec_trim_front_zero_length) {
+    char dummy;
+
+    // Single zero-length iovec: trimming 0 bytes should skip it
+    {
+        std::vector<iovec> iovs;
+        iovs.push_back(iovec{ &dummy, 0 });
+        auto res = internal::iovec_trim_front(std::span(iovs), 0);
+        BOOST_REQUIRE_MESSAGE(res.empty(),
+            "trim_front(0) on a single zero-length iovec must return empty span");
+    }
+
+    // Multiple zero-length iovecs
+    {
+        std::vector<iovec> iovs;
+        iovs.push_back(iovec{ &dummy, 0 });
+        iovs.push_back(iovec{ &dummy, 0 });
+        iovs.push_back(iovec{ &dummy, 0 });
+        auto res = internal::iovec_trim_front(std::span(iovs), 0);
+        BOOST_REQUIRE_MESSAGE(res.empty(),
+            "trim_front(0) on all-zero-length iovecs must return empty span");
+    }
+
+    // Zero-length iovecs before a non-zero one: should skip the empty
+    // entries and return a span starting at the non-zero iovec
+    {
+        const char* data = "abc";
+        std::vector<iovec> iovs;
+        iovs.push_back(iovec{ &dummy, 0 });
+        iovs.push_back(iovec{ (void*)data, 3 });
+        auto res = internal::iovec_trim_front(std::span(iovs), 0);
+        BOOST_REQUIRE_EQUAL(res.size(), 1);
+        BOOST_REQUIRE_EQUAL(res[0].iov_len, 3);
+        BOOST_REQUIRE_EQUAL(*reinterpret_cast<const char*>(res[0].iov_base), 'a');
+    }
+}

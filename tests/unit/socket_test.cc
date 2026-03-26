@@ -546,3 +546,29 @@ SEASTAR_THREAD_TEST_CASE(inet_local_remote_address_sanity) {
     ss.wait_input_shutdown().get();
     BOOST_CHECK(ss.remote_address().is_unspecified());
 }
+
+// Regression test: data_sink::put() with a zero-length temporary_buffer used
+// to cause write_all to infinitely recurse (stack overflow) because
+// iovec_trim_front(iovs, 0) returned the same non-empty span with a
+// zero-length iovec, so no progress was made.
+// Only applies to API level >= 9 where write_all uses the iovec path;
+// at lower levels, write_all(const char*, size_t) asserts len > 0.
+#if SEASTAR_API_LEVEL >= 9
+SEASTAR_THREAD_TEST_CASE(data_sink_put_zero_length) {
+    auto addr = make_ipv4_address(11004);
+    auto ls = listen(addr);
+    auto ar_f = ls.accept();
+    auto cs = connect(addr).get();
+    auto ar = ar_f.get();
+
+    // Detach the raw data_sink to bypass output_stream's zero-length filter.
+    auto sink = std::move(cs).output().detach();
+
+    // Without the iovec_trim_front fix, this infinitely recurses and segfaults.
+    sink.put(temporary_buffer<char>()).get();
+
+    ar.connection.shutdown_input();
+    ar.connection.shutdown_output();
+    ls.abort_accept();
+}
+#endif
