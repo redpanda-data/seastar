@@ -1023,7 +1023,7 @@ public:
         bio_ptr in_bio(BIO_new(get_method()));
         bio_ptr out_bio(BIO_new(get_method()));
         if (!in_bio || !out_bio) {
-            throw std::runtime_error("Failed to create BIOs");
+            throw make_ossl_error("Failed to create BIOs");
         }
         if (1 != BIO_ctrl(in_bio.get(), BIO_C_SET_POINTER, 0, this)) {
             throw make_ossl_error("Failed to set bio ptr to in bio");
