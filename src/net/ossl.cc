@@ -1825,6 +1825,17 @@ SEASTAR_INTERNAL_END_IGNORE_DEPRECATIONS
     }
 
 private:
+    // Some SSL operations return success while leaving stale errors on the
+    // queue (e.g. from internal BIO write failures that OpenSSL absorbed).
+    // Drain them so they don't poison the next operation on this shard.
+    void clear_stale_ssl_errors(const char* operation) {
+        if (ERR_peek_error() == 0) [[likely]] {
+            return;
+        }
+        auto errors = get_all_ossl_errors();
+        tls_log.debug("{} {}: ignoring stale errors on queue: {}", *this, operation, errors);
+    }
+
     std::vector<subject_alt_name> do_get_alt_name_information(const x509_ptr &peer_cert,
                                                               const std::unordered_set<subject_alt_name_type> &types) const {
         int ext_idx = X509_get_ext_by_NID(
@@ -1993,6 +2004,11 @@ private:
             throw make_ossl_error(
               "Failed to initialize SSL context");
         }
+        // SSL_CTX_new can return a valid context while leaving errors on the
+        // error queue from partially-failed system config parsing (e.g. an
+        // invalid Ciphersuites value in the system openssl.cnf).
+        // See https://github.com/openssl/openssl/issues/30760
+        clear_stale_ssl_errors("SSL_CTX_new");
         const auto& ck_pair = _creds->get_certkey_pair();
         if (type == session_type::SERVER) {
             if (!ck_pair) {
