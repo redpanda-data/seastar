@@ -1205,6 +1205,7 @@ public:
                     co_return;
                 }
             } else {
+                clear_stale_ssl_errors("SSL_write_ex");
                 SEASTAR_ASSERT(bytes_written <= size);
                 tls_log.trace("{} do_put: bytes_written: {}", *this, bytes_written);
                 ptr += bytes_written;
@@ -1335,6 +1336,7 @@ public:
                             return handle_output_error(std::move(err));
                         }
                     } else {
+                        clear_stale_ssl_errors("SSL_do_handshake");
                         if (_type == session_type::CLIENT
                             || _creds->get_client_auth() != client_auth::NONE) {
                             verify();
@@ -1460,6 +1462,7 @@ public:
                     return make_exception_future<buf_type>(_error);
                 }
             } else {
+                clear_stale_ssl_errors("SSL_read_ex");
                 buf.trim(bytes_read);
                 return make_ready_future<buf_type>(std::move(buf));
             }
@@ -1495,8 +1498,10 @@ public:
         auto res = SSL_shutdown(_ssl.get());
         tls_log.trace("{} do_shutdown: SSL_shutdown: {}", *this, res);
         if (res == 1) {
+            clear_stale_ssl_errors("SSL_shutdown");
             return wait_for_output();
         } else if (res == 0) {
+            clear_stale_ssl_errors("SSL_shutdown");
             return yield().then([this] { return do_shutdown(); });
         } else {
             auto ssl_err = SSL_get_error(_ssl.get(), res);
