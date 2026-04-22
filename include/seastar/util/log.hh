@@ -351,6 +351,11 @@ public:
     void error(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::error, std::move(fmt), std::forward<Args>(args)...);
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void error(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::error, force, std::move(fmt), std::forward<Args>(args)...);
+    }
     /// Log with warning tag:
     /// WARN  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -362,6 +367,11 @@ public:
     void warn(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::warn, std::move(fmt), std::forward<Args>(args)...);
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void warn(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::warn, force, std::move(fmt), std::forward<Args>(args)...);
+    }
     /// Log with info tag:
     /// INFO  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -372,6 +382,11 @@ public:
     template <typename... Args>
     void info(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::info, std::move(fmt), std::forward<Args>(args)...);
+    }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void info(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::info, force, std::move(fmt), std::forward<Args>(args)...);
     }
     /// Log with info tag on shard zero only:
     /// INFO  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
@@ -386,6 +401,13 @@ public:
             log(log_level::info, std::move(fmt), std::forward<Args>(args)...);
         }
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void info0(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        if (is_shard_zero()) {
+            log(log_level::info, force, std::move(fmt), std::forward<Args>(args)...);
+        }
+    }
     /// Log with debug tag:
     /// DEBUG  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -397,6 +419,11 @@ public:
     void debug(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::debug, std::move(fmt), std::forward<Args>(args)...);
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void debug(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::debug, force, std::move(fmt), std::forward<Args>(args)...);
+    }
     /// Log with trace tag:
     /// TRACE  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -407,6 +434,11 @@ public:
     template <typename... Args>
     void trace(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::trace, std::move(fmt), std::forward<Args>(args)...);
+    }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void trace(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::trace, force, std::move(fmt), std::forward<Args>(args)...);
     }
 
     /// \return name of the logger. Usually one logger per module
