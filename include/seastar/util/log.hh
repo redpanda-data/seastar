@@ -262,6 +262,12 @@ public:
         do_log_checked(level, false, std::move(fmt), std::forward<Args>(args)...);
     }
 
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void log(log_level level, force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        do_log_checked(level, true, std::move(fmt), std::forward<Args>(args)...);
+    }
+
     /// logs with a rate limit to desired level if enabled, otherwise we ignore the log line
     ///
     /// If there were messages dropped due to rate-limiting the following snippet
@@ -279,6 +285,13 @@ public:
     template <typename... Args>
     void log(log_level level, rate_limit& rl, format_info_t<Args...> fmt, Args&&... args) noexcept {
         do_log_checked_rl(level, false, rl, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    /// Force-emit rate-limited variant: bypass the level gate (the rate
+    /// limit itself still applies).
+    template <typename... Args>
+    void log(log_level level, force_tag, rate_limit& rl, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        do_log_checked_rl(level, true, rl, std::move(fmt), std::forward<Args>(args)...);
     }
 
     /// \cond internal

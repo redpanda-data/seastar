@@ -769,6 +769,9 @@ seastar_add_test (weak_ptr
 seastar_add_test (log_buf
   SOURCES log_buf_test.cc)
 
+seastar_add_test (logger_force
+  SOURCES logger_force_test.cc)
+
 seastar_add_test (exception_logging
   KIND BOOST
   SOURCES exception_logging_test.cc)
