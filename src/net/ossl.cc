@@ -1858,7 +1858,7 @@ private:
         char buf[256];
         ERR_error_string_n(err, buf, sizeof(buf));
         tls_log.warn("{} stale error on queue before {}: {}", *this, operation, buf);
-        SEASTAR_ASSERT(0 && "stale errors on OpenSSL error queue");
+        assert(0 && "stale errors on OpenSSL error queue");
     }
 
     std::vector<subject_alt_name> do_get_alt_name_information(const x509_ptr &peer_cert,
