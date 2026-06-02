@@ -50,6 +50,7 @@
 
 #include <netinet/in.h>
 
+#include <seastar/core/condition-variable.hh>
 #include <seastar/core/gate.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/sstring.hh>
@@ -825,7 +826,6 @@ public:
       , _in_sem(1)
       , _out_sem(1)
       , _options(std::move(options))
-      , _output_pending(make_ready_future<>())
       , _ctx(make_ssl_context(t))
       , _ssl([this]() {
           auto ssl = SSL_new(_ctx.get());
@@ -883,23 +883,35 @@ public:
             : openssl_session(t, std::move(creds), net::get_impl::get(std::move(sock)), options) {}
 
     ~openssl_session() {
-        SEASTAR_ASSERT(_output_pending.available());
+        SEASTAR_ASSERT(!_output_in_flight);
     }
 
     const char * get_type_string() const {
         return _type == session_type::CLIENT ? "Client": "Server";
     }
 
-    // This function waits for the _output_pending future to resolve
-    // If an error occurs, it is saved off into _error and returned
+    // Waits until the put() currently in flight on the underlying socket has
+    // drained; if it failed, the error is saved into _error and returned.
+    //
+    // The wait is driven by a condition variable rather than by consuming a
+    // future, because it is called from both the read and write paths (which
+    // use different semaphores, _in_sem vs _out_sem, and can both emit output
+    // -- e.g. a write encrypting application data, and a read that has to emit
+    // a TLS key-update/renegotiation message). _output_in_flight stays true
+    // until the put actually drains, so the guard in bio_write_ex() can't be
+    // fooled into issuing a second, concurrent put() on the same data_sink
+    // (which would trip SEASTAR_ASSERT(!_p) in posix_data_sink_impl).
     future<> wait_for_output() {
         tls_log.trace("{} wait_for_output", *this);
-        return std::exchange(_output_pending, make_ready_future())
-          .handle_exception([this](auto ep) {
-              tls_log.debug("{} wait_for_output error: {}", *this, ep);
-              _error = ep;
-              return make_exception_future(ep);
-          });
+        return _output_idle.wait([this] { return !_output_in_flight; }).then([this] {
+            if (_output_error) {
+                auto ep = std::exchange(_output_error, std::exception_ptr());
+                tls_log.debug("{} wait_for_output error: {}", *this, ep);
+                _error = ep;
+                return make_exception_future<>(ep);
+            }
+            return make_ready_future<>();
+        });
     }
 
     template<std::derived_from<std::exception> T>
@@ -982,7 +994,6 @@ public:
         auto i = bufs.begin();
         auto e = bufs.end();
         return with_semaphore(_out_sem, 1, [this, i, e] {
-            SEASTAR_ASSERT(_output_pending.available());
             return do_for_each(i, e, [this](temporary_buffer<char>& b) {
                 return do_put_one(b.get(), b.size());
             });
@@ -993,7 +1004,6 @@ public:
         auto ptr = buf.get();
         auto size = buf.size();
         return with_semaphore(_out_sem, 1, [this, ptr, size] {
-            SEASTAR_ASSERT(_output_pending.available());
             return do_put_one(ptr, size);
         }).finally([b = std::move(buf)] {});
     }
@@ -1004,7 +1014,15 @@ public:
     // any unprocessed part of the packet is returned.
     future<> do_put_one(const char* ptr, size_t size) {
         tls_log.trace("{} do_put", *this);
-        SEASTAR_ASSERT(_output_pending.available());
+
+        // Drain any output that may still be in flight before we drive
+        // SSL_write_ex (which produces more output). Output can be issued by
+        // the read path too -- e.g. a TLS key-update/renegotiation message
+        // emitted while processing an incoming record -- and that path holds
+        // _in_sem, not _out_sem, so holding _out_sem here is not enough to
+        // guarantee _out is idle. Waiting keeps puts on the underlying sink
+        // strictly sequential across both paths.
+        co_await wait_for_output();
 
         // This do_until runs until either a renegotiation occurs or the packet is empty
         while (!eof() && size > 0) {
@@ -2088,7 +2106,19 @@ private:
     semaphore _out_sem;
     tls_options _options;
 
-    future<> _output_pending;
+    // Output state for the underlying socket (_out). Only one put() may be in
+    // flight on a data_sink at a time, but output is issued from both the read
+    // and write paths (see wait_for_output()), so a single flag -- not
+    // semaphore ownership -- tracks whether _out is busy:
+    //   _output_in_flight  the guard bio_write_ex() consults; stays true until
+    //                      the in-flight put drains.
+    //   _output_error      failure of the in-flight put, surfaced by the next
+    //                      wait_for_output().
+    //   _output_idle       broadcast when a put completes, so any number of
+    //                      waiters (read path and write path) can await it.
+    bool _output_in_flight = false;
+    std::exception_ptr _output_error;
+    condition_variable _output_idle;
     buf_type _input;
     // ALPN protocols in OPENSSL format
     // This is a sequence of length-prefixed strings, where the first byte is the length
@@ -2204,7 +2234,7 @@ long bio_ctrl(BIO * b, int ctrl, long num, void * data) {
     case BIO_CTRL_PENDING:
         return static_cast<long>(session->_input.size());
     case BIO_CTRL_WPENDING:
-        return session->_output_pending.available() ? 0 : 1;
+        return session->_output_in_flight ? 1 : 0;
     default:
         return 0;
     }
@@ -2222,34 +2252,55 @@ int bio_create(BIO*) {
 
 /// Handles writes to the BIO
 ///
-/// This function will attempt to call _out.put() and store the future in
-/// _output_pending.  If _output_pending has not yet resolved, return '0'
-/// and set the retry write flag.
+/// This function attempts to call _out.put(). Only one put may be in flight at
+/// a time: if a previous put is still draining (_output_in_flight), it returns
+/// '0' and sets the retry-write flag so OpenSSL retries once the put completes
+/// (driven by the caller's wait_for_output()).
 int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     auto session = unwrap_bio_ptr(b);
     tls_log.trace("{} bio_write_ex: dlen {}", *session, dlen);
     BIO_clear_retry_flags(b);
 
-    if (!session->_output_pending.available()) {
-        tls_log.trace("{} bio_write_ex: nothing pending in output", *session);
+    if (session->_output_in_flight) {
+        tls_log.trace("{} bio_write_ex: output still draining", *session);
         BIO_set_retry_write(b);
         return 0;
     }
 
     try {
-        size_t n;
+        size_t n = 0;
 
-        if (!session->_output_pending.failed()) {
+        if (!session->_output_error) {
             auto buf = temporary_buffer<char>(dlen);
             std::memcpy(buf.get_write(), data, dlen);
             n = buf.size();
-            session->_output_pending = session->_out.put(std::move(buf));
-            tls_log.trace("{} bio_write_ex: Appended {} bytes to output pending", *session, n);
+            auto f = session->_out.put(std::move(buf));
+            if (f.available()) {
+                // Completed synchronously: surface a failure right away (caught
+                // below); on success _out is already idle, nothing is pending.
+                if (f.failed()) {
+                    std::rethrow_exception(std::move(f).get_exception());
+                }
+            } else {
+                // Drains in the background; mark _out busy and wake any waiters
+                // when it completes. Hold a reference to the session since the
+                // completion handler touches its state.
+                session->_output_in_flight = true;
+                (void)std::move(f).then_wrapped(
+                    [self = session->shared_from_this()](future<> f) {
+                        self->_output_in_flight = false;
+                        if (f.failed()) {
+                            self->_output_error = std::move(f).get_exception();
+                        }
+                        self->_output_idle.broadcast();
+                    });
+            }
+            tls_log.trace("{} bio_write_ex: queued {} bytes to output", *session, n);
         }
 
-        if (session->_output_pending.failed()) {
+        if (session->_output_error) {
             tls_log.debug("{} bio_write_ex: output pending has error", *session);
-            std::rethrow_exception(session->_output_pending.get_exception());
+            std::rethrow_exception(session->_output_error);
         }
 
         if (written != nullptr) {
@@ -2260,11 +2311,11 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     } catch(const std::system_error & e) {
         tls_log.debug("{} bio_write_ex: system error occurred: {}", *session, e.what());
         ERR_raise_data(ERR_LIB_SYS, e.code().value(), e.what());
-        session->_output_pending = make_exception_future<>(std::current_exception());
+        session->_output_error = std::current_exception();
     } catch(...) {
         tls_log.debug("{} bio_write_ex: unknown error occurred", *session);
         ERR_raise(ERR_LIB_SYS, EIO);
-        session->_output_pending = make_exception_future<>(std::current_exception());
+        session->_output_error = std::current_exception();
     }
 
     return 0;
