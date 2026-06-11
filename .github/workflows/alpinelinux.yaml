@@ -1,7 +1,8 @@
 name: Alpine Linux
 
 on:
-  pull_request:
+  # pull_request trigger disabled on stable release branches, see CORE-16616
+  # pull_request:
   workflow_dispatch:  # Allows manual triggering
 
 concurrency:
