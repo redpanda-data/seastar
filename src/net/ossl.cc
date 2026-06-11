@@ -1234,6 +1234,22 @@ public:
         });
     }
 
+    // Test-only hook used by tls_test.cc to reproduce the concurrent put()
+    // this change fixes. It is intentionally not part of the public TLS API
+    // (the OpenSSL backend on this branch has no rehandshake/key-update entry
+    // point): it simply requests a TLS 1.3 key update on this (server) session,
+    // so the peer's read path emits a key-update response -- the read-path
+    // put() the reproducer needs. Reached from the test via the free function
+    // trigger_key_update_for_test(connected_socket&) defined below.
+    future<> trigger_key_update_for_test() {
+        return with_semaphore(_out_sem, 1, [this] {
+            if (!SSL_key_update(_ssl.get(), SSL_KEY_UPDATE_REQUESTED)) {
+                throw make_ossl_error("SSL_key_update failed");
+            }
+            return wait_for_output();
+        });
+    }
+
     // Called after locking the _in_sem and _out_sem semaphores.
     // This function will walk through the handshake with a remote peer
     // If EOF is encountered, ENOTCONN is thrown
@@ -2171,6 +2187,18 @@ private:
     friend int session_ticket_cb(SSL*, unsigned char[16], unsigned char[EVP_MAX_IV_LENGTH],
                                  EVP_CIPHER_CTX*, EVP_MAC_CTX*, int);
 };
+
+// Test-only hook, implemented here for the OpenSSL backend and intentionally
+// not declared in any public header. tls_test.cc forward-declares it to drive
+// the concurrent-put reproducer; production code must not depend on it. See
+// session::trigger_key_update_for_test() for what it does and why.
+future<> trigger_key_update_for_test(connected_socket& socket) {
+    auto* impl = net::get_impl::maybe_get_ptr(socket);
+    auto* tls_impl = dynamic_cast<tls_connected_socket_impl*>(impl);
+    SEASTAR_ASSERT(tls_impl);
+    auto* sess = static_cast<session*>(tls_impl->_session.get());
+    return sess->trigger_key_update_for_test();
+}
 
 // The following callback function is used whenever session tickets are generated or received by
 // the TLS server.  If TLS session resumption is enabled, then an AES and HMAC key are
