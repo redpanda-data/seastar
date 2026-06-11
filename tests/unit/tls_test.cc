@@ -2243,42 +2243,51 @@ SEASTAR_THREAD_TEST_CASE(test_concurrent_put_with_key_update) {
         bool arm = false;           // when set, the next put() is held
         promise<> entered;          // resolved once a put() has been held
         promise<> release;          // resolved by the test to release the held put()
-    } gate;
+    };
+    // gate_state is shared with the sink (lw_shared_ptr) so it outlives the test
+    // body. openssl_session::close() tears the connection down via
+    // engine().run_in_background(...) -- a detached reactor task, kept alive by
+    // shared_from_this(), whose future is discarded -- so a sink put()'s finally
+    // can run on the reactor after this SEASTAR_THREAD_TEST_CASE fiber has
+    // returned and freed its stack. A reference to a stack gate would then be a
+    // use-after-return (an intermittent SEGV under ASan). There is no awaitable
+    // teardown to drain instead; see the commit message for the full rationale.
+    auto gate = make_lw_shared<gate_state>();
 
     // A connected socket whose sink detects overlapping put()s (mirroring the
     // posix_data_sink_impl contract) and can hold the first put() on demand.
     class instrumented_socket_impl : public loopback_connected_socket_impl {
     public:
-        gate_state& _gate;
-        instrumented_socket_impl(gate_state& g, lw_shared_ptr<loopback_buffer> tx, lw_shared_ptr<loopback_buffer> rx)
+        lw_shared_ptr<gate_state> _gate;
+        instrumented_socket_impl(lw_shared_ptr<gate_state> g, lw_shared_ptr<loopback_buffer> tx, lw_shared_ptr<loopback_buffer> rx)
             : loopback_connected_socket_impl(std::move(tx), std::move(rx))
-            , _gate(g)
+            , _gate(std::move(g))
         {}
         class sink_impl : public data_sink_impl {
             data_sink _next;
-            gate_state& _gate;
+            lw_shared_ptr<gate_state> _gate;
             future<> forward(std::vector<temporary_buffer<char>> bufs) {
-                if (_gate.outstanding != 0) {
+                if (_gate->outstanding != 0) {
                     // Equivalent to SEASTAR_ASSERT(!_p) firing in
                     // posix_data_sink_impl: a put() was issued while a previous
                     // one had not yet completed.
-                    _gate.overlap = true;
+                    _gate->overlap = true;
                 }
-                ++_gate.outstanding;
+                ++_gate->outstanding;
                 future<> hold = make_ready_future<>();
-                if (_gate.arm) {
-                    _gate.arm = false;             // one-shot
-                    _gate.entered.set_value();     // announce the held put()
-                    hold = _gate.release.get_future();
+                if (_gate->arm) {
+                    _gate->arm = false;            // one-shot
+                    _gate->entered.set_value();    // announce the held put()
+                    hold = _gate->release.get_future();
                 }
                 return hold.then([this, bufs = std::move(bufs)] () mutable {
                     return _next.put(std::move(bufs));
-                }).finally([this] {
-                    --_gate.outstanding;
+                }).finally([gate = _gate] {
+                    --gate->outstanding;
                 });
             }
         public:
-            sink_impl(data_sink next, gate_state& g) : _next(std::move(next)), _gate(g) {}
+            sink_impl(data_sink next, lw_shared_ptr<gate_state> g) : _next(std::move(next)), _gate(std::move(g)) {}
             future<> flush() override { return _next.flush(); }
             future<> close() override { return _next.close(); }
             bool can_batch_flushes() const noexcept override { return false; }
@@ -2342,13 +2351,13 @@ SEASTAR_THREAD_TEST_CASE(test_concurrent_put_with_key_update) {
 
     // Arm the trap: the next put() on the client socket (the flushed key-update
     // response, emitted from the read path) will be held in flight.
-    gate.arm = true;
+    gate->arm = true;
 
     // Read on the client. While processing the second key-update it flushes the
     // pending response as a put() -- which the gate holds -- then suspends in
     // wait_for_output() awaiting it (holding _in_sem, not _out_sem).
     auto fR = cin.read();
-    gate.entered.get_future().get();
+    gate->entered.get_future().get();
 
     // Now write on the client. With the read's put held in flight, the buggy
     // code lets this write issue a second, concurrent put() on the same sink
@@ -2359,10 +2368,10 @@ SEASTAR_THREAD_TEST_CASE(test_concurrent_put_with_key_update) {
     // colliding put(). The read's put stays held, so the window stays open.
     seastar::sleep(std::chrono::milliseconds(200)).get();
 
-    bool overlap = gate.overlap;
+    bool overlap = gate->overlap;
 
     // Release the held put; both directions drain from here.
-    gate.release.set_value();
+    gate->release.set_value();
 
     auto ignore = [](auto f) { try { f.get(); } catch (...) {} };
     ignore(std::move(fW));
