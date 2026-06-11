@@ -2270,3 +2270,201 @@ SEASTAR_THREAD_TEST_CASE(test_early_server_disconnect) {
 
     auto _ = tls::wrap_client(creds, std::move(c), tls::tls_options{}).get();
 }
+
+// Reproduces a production crash specific to the OpenSSL TLS backend:
+//
+//   SEASTAR_ASSERT(!_p);   // posix_data_sink_impl::put(packet), posix-stack.cc
+//
+// The TLS read and write paths use separate semaphores (_in_sem vs _out_sem),
+// and both can write to the underlying socket. The read path produces output
+// while processing an incoming TLS key-update/renegotiation: OpenSSL flushes a
+// pending key-update response from *inside* SSL_read_ex, pushing it out as a
+// put() on the underlying data_sink. If an application write is in flight on
+// that sink at the same time, the read issues a second, concurrent put() --
+// which posix_data_sink_impl forbids (it only tolerates one in-flight put at a
+// time), tripping the assert. The defective guard is wait_for_output()
+// swapping _output_pending for a ready future before the put actually drains.
+//
+// GnuTLS surfaces a rehandshake to the caller and re-runs the handshake while
+// holding *both* semaphores, so it never issues that concurrent put; hence
+// this is OpenSSL-specific and the test is compiled out under the GnuTLS
+// backend.
+//
+// The test installs an instrumented data_sink under the client that flags any
+// put() issued while another is still in flight (exactly what the posix assert
+// detects), and can hold a put() to open a deterministic window. It drives two
+// server key-updates: OpenSSL only flushes the response to the first one while
+// reading the second, and that flush is the read-path put() we hold in flight
+// while a concurrent client write tries to issue the colliding put().
+//
+// The OpenSSL backend on this branch has no rehandshake/key-update entry point,
+// so the server key-updates are driven through the test-only hook
+// tls::trigger_key_update_for_test() (defined in src/net/ossl.cc).
+#ifndef SEASTAR_USE_GNUTLS
+namespace seastar::tls { future<> trigger_key_update_for_test(connected_socket&); }
+#endif
+SEASTAR_THREAD_TEST_CASE(test_concurrent_put_with_key_update) {
+#ifdef SEASTAR_USE_GNUTLS
+    // GnuTLS does not emit rehandshake/key-update output from the read path, so
+    // the concurrent-put scenario does not apply (and the trigger hook is
+    // OpenSSL-only).
+    return;
+#else
+    tls::credentials_builder b;
+    b.set_x509_key_file(certfile("test.crt"), certfile("test.key"), tls::x509_crt_format::PEM).get();
+    b.set_x509_trust_file(certfile("catest.pem"), tls::x509_crt_format::PEM).get();
+    b.set_dh_level();
+    // force TLS 1.3 so that the key update rotates the session keys, which is
+    // what makes the OpenSSL read path produce output.
+    b.set_minimum_tls_version(tls::tls_version::tlsv1_3);
+
+    auto creds = b.build_certificate_credentials();
+    auto serv = b.build_server_credentials();
+
+    // State shared between the test and the instrumented client sink.
+    struct gate_state {
+        unsigned outstanding = 0;   // put()s currently in flight on the sink
+        bool overlap = false;       // a put() started while another was in flight
+        bool arm = false;           // when set, the next put() is held
+        promise<> entered;          // resolved once a put() has been held
+        promise<> release;          // resolved by the test to release the held put()
+    };
+    // gate_state is shared with the sink (lw_shared_ptr) so it outlives the test
+    // body. session::close() tears the connection down via
+    // engine().run_in_background(...) -- a detached reactor task, kept alive by
+    // shared_from_this(), whose future is discarded -- so a sink put()'s finally
+    // can run on the reactor after this SEASTAR_THREAD_TEST_CASE fiber has
+    // returned and freed its stack. A reference to a stack gate would then be a
+    // use-after-return (an intermittent SEGV under ASan). There is no awaitable
+    // teardown to drain instead; see the commit message for the full rationale.
+    auto gate = make_lw_shared<gate_state>();
+
+    // A connected socket whose sink detects overlapping put()s (mirroring the
+    // posix_data_sink_impl contract) and can hold the first put() on demand.
+    class instrumented_socket_impl : public loopback_connected_socket_impl {
+    public:
+        lw_shared_ptr<gate_state> _gate;
+        instrumented_socket_impl(lw_shared_ptr<gate_state> g, lw_shared_ptr<loopback_buffer> tx, lw_shared_ptr<loopback_buffer> rx)
+            : loopback_connected_socket_impl(std::move(tx), std::move(rx))
+            , _gate(std::move(g))
+        {}
+        class sink_impl : public data_sink_impl {
+            data_sink _next;
+            lw_shared_ptr<gate_state> _gate;
+            future<> forward(std::vector<temporary_buffer<char>> bufs) {
+                if (_gate->outstanding != 0) {
+                    // Equivalent to SEASTAR_ASSERT(!_p) firing in
+                    // posix_data_sink_impl: a put() was issued while a previous
+                    // one had not yet completed.
+                    _gate->overlap = true;
+                }
+                ++_gate->outstanding;
+                future<> hold = make_ready_future<>();
+                if (_gate->arm) {
+                    _gate->arm = false;            // one-shot
+                    _gate->entered.set_value();    // announce the held put()
+                    hold = _gate->release.get_future();
+                }
+                return hold.then([this, bufs = std::move(bufs)] () mutable {
+                    return _next.put(std::move(bufs));
+                }).finally([gate = _gate] {
+                    --gate->outstanding;
+                });
+            }
+        public:
+            sink_impl(data_sink next, lw_shared_ptr<gate_state> g) : _next(std::move(next)), _gate(std::move(g)) {}
+            future<> flush() override { return _next.flush(); }
+            future<> close() override { return _next.close(); }
+            bool can_batch_flushes() const noexcept override { return false; }
+            using data_sink_impl::put;
+            future<> put(net::packet p) override {
+                return forward(p.release());
+            }
+        };
+        data_sink sink() override {
+            return data_sink(std::make_unique<sink_impl>(loopback_connected_socket_impl::sink(), _gate));
+        }
+    };
+
+    auto b1 = ::make_lw_shared<loopback_buffer>(nullptr, loopback_buffer::type::SERVER_TX);
+    auto b2 = ::make_lw_shared<loopback_buffer>(nullptr, loopback_buffer::type::CLIENT_TX);
+    auto ssi = std::make_unique<loopback_connected_socket_impl>(b1, b2);
+    auto csi = std::make_unique<instrumented_socket_impl>(gate, b2, b1);
+
+    auto server = tls::wrap_server(serv, connected_socket(std::move(ssi))).get();
+    auto client = tls::wrap_client(creds, connected_socket(std::move(csi))).get();
+
+    auto cin = client.input();
+    auto cout = output_stream<char>(client.output().detach(), 1024);
+    auto sin = server.input();
+    auto sout = output_stream<char>(server.output().detach(), 1024);
+
+    auto exchange = [&](output_stream<char>& out, input_stream<char>& in, const char* msg) {
+        out.write(msg).get();
+        auto fin = in.read();
+        out.flush().get();
+        return fin.get();
+    };
+
+    // Complete the handshake and exchange data both ways so both sides are
+    // fully connected and the client's output is idle before we arm the trap.
+    exchange(cout, sin, "hello");
+    exchange(sout, cin, "hello");
+
+    // OpenSSL only flushes the key-update *response* while processing a
+    // *subsequent* incoming key-update (or on the next write). So the read
+    // path produces output only on the second key-update. Drive the first
+    // one here: the client reads it and schedules a response, but emits
+    // nothing yet.
+    tls::trigger_key_update_for_test(server).get();
+    exchange(sout, cin, "a");  // carries the 1st key-update; client schedules a response
+
+    // Queue the second key-update (plus a byte to flush it). The loopback
+    // delivers the key-update record and the data byte as separate buffers, so
+    // the client's read of the key-update returns WANT_READ *after* flushing
+    // the pending response -- meaning that flush lands as a read-path put().
+    tls::trigger_key_update_for_test(server).get();
+    sout.write("b").get();
+    sout.flush().get();
+
+    // Arm the trap: the next put() on the client socket (the flushed key-update
+    // response, emitted from the read path) will be held in flight.
+    gate->arm = true;
+
+    // Read on the client. While processing the second key-update it flushes the
+    // pending response as a put() -- which the gate holds -- then suspends in
+    // wait_for_output() awaiting it (holding _in_sem, not _out_sem).
+    auto fR = cin.read();
+    gate->entered.get_future().get();
+
+    // Now write on the client. With the read's put held in flight, the buggy
+    // code lets this write issue a second, concurrent put() on the same sink
+    // (the bug). The fixed code makes the write wait for the in-flight put.
+    auto fW = cout.write("world").then([&cout] { return cout.flush(); });
+
+    // Give the write path time to reach the point where it would issue the
+    // colliding put(). The read's put stays held, so the window stays open.
+    seastar::sleep(std::chrono::milliseconds(200)).get();
+
+    bool overlap = gate->overlap;
+
+    // Release the held put; both directions drain from here.
+    gate->release.set_value();
+
+    auto ignore = [](auto f) { try { f.get(); } catch (...) {} };
+    ignore(std::move(fW));
+    ignore(std::move(fR));
+    ignore(cout.close());
+    ignore(cin.close());
+    ignore(sout.close());
+    ignore(sin.close());
+    client.shutdown_input();
+    client.shutdown_output();
+    server.shutdown_input();
+    server.shutdown_output();
+
+    BOOST_CHECK_MESSAGE(!overlap,
+        "TLS layer issued two concurrent put()s on the underlying data_sink "
+        "(this is what trips SEASTAR_ASSERT(!_p) in posix_data_sink_impl)");
+#endif
+}
