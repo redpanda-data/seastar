@@ -1007,6 +1007,7 @@ public:
       , _in_sem(1)
       , _out_sem(1)
       , _options(std::move(options))
+      , _output_in_progress(false)
       , _output_pending(make_ready_future<>())
       , _ctx(make_ssl_context(t))
       , _ssl([this]() {
@@ -1065,7 +1066,7 @@ public:
             : session(t, std::move(creds), net::get_impl::get(std::move(sock)), options) {}
 
     ~session() {
-        SEASTAR_ASSERT(_output_pending.available());
+        SEASTAR_ASSERT(output_available());
     }
 
     const char * get_type_string() const {
@@ -1166,7 +1167,16 @@ public:
     // any unprocessed part of the packet is returned.
     future<> do_put(net::packet p) {
         tls_log.trace("{} do_put", *this);
-        SEASTAR_ASSERT(_output_pending.available());
+
+        // the put path is protected from concurrent calls by the _out_sem semaphore,
+        // however it is possible via the read (get()) path that a renegotiation may
+        // occur, putting an outstanding write on the output path.  Originally,
+        // there was an assert to ensure that _output_pending was available.  This assert
+        // would correctly serve the purpose that no writes occurred outside of the protection
+        // of the _out_sem.  However, since writes from OpenSSL can occur outside of this semaphore,
+        // we will attempt to perform a write even if there is an outstanding write pending.
+        // This will result in SSL_write_ex failing with SSL_WANT_WRITE as the error code.
+        // This will force a wait_for_output to occur.
         return do_with(std::move(p),
             [this](net::packet& p) {
                 // This do_until runs until either a renegotiation occurs or the packet is empty
@@ -1655,7 +1665,8 @@ public:
                   // handshake aqcuire, because in worst case, we get here while a reader is attempting
                   // re-handshake.
                   return with_semaphore(_in_sem, 1, [this] {
-                      return with_semaphore(_out_sem, 1, [] { });
+                      return with_semaphore(_out_sem, 1, [] {
+                    });
                   });
               }).handle_exception([me = shared_from_this()](std::exception_ptr){
               }).discard_result());
@@ -1786,6 +1797,40 @@ public:
     // `DISCONNECTED` if not connected
     const sstring& remote_address() const noexcept {
         return _remote_address;
+    }
+
+    future<>& output_pending() {
+        return _output_pending;
+    }
+
+    bool output_available() {
+        // the wait_for_output method exchanges _output_pending for a ready
+        // future and then awaits for the output to complete.  Checking that
+        // _output_pending is not enough to ensure that the output has completed.
+        // The purpose of the output_in_progress flag is to await that that
+        // future has resolved before permitting another write to be enqueued.
+        return !_output_in_progress && _output_pending.available();
+    }
+
+    void assign_output_pending(future<> f) {
+        SEASTAR_ASSERT(!_output_in_progress);
+        SEASTAR_ASSERT(_output_pending.available());
+        _output_in_progress = true;
+        _output_pending = std::move(f).finally([this]{_output_in_progress = false;});
+    }
+
+    void assign_output_error(std::exception_ptr ep) {
+        SEASTAR_ASSERT(_output_pending.available());
+        _output_in_progress = false;
+        _output_pending = make_exception_future<>(ep);
+    }
+
+    data_sink& out() {
+        return _out;
+    }
+
+    buf_type& input() {
+        return _input;
     }
 
 private:
@@ -2152,6 +2197,7 @@ private:
     semaphore _out_sem;
     tls_options _options;
 
+    bool _output_in_progress{false};
     future<> _output_pending;
     buf_type _input;
     // ALPN protocols in OPENSSL format
@@ -2165,9 +2211,6 @@ private:
     bool _eof = false;
     bool _shutdown = false;
 
-    friend int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written);
-    friend int bio_read_ex(BIO* b, char * data, size_t dlen, size_t *readbytes);
-    friend long bio_ctrl(BIO * b, int ctrl, long num, void * data);
     friend int session_ticket_cb(SSL*, unsigned char[16], unsigned char[EVP_MAX_IV_LENGTH],
                                  EVP_CIPHER_CTX*, EVP_MAC_CTX*, int);
 };
@@ -2266,9 +2309,9 @@ long bio_ctrl(BIO * b, int ctrl, long num, void * data) {
     case BIO_CTRL_EOF:
         return BIO_test_flags(b, BIO_FLAGS_IN_EOF) != 0;
     case BIO_CTRL_PENDING:
-        return static_cast<long>(session->_input.size());
+        return static_cast<long>(session->input().size());
     case BIO_CTRL_WPENDING:
-        return session->_output_pending.available() ? 0 : 1;
+        return session->output_available() ? 0 : 1;
     default:
         return 0;
     }
@@ -2294,8 +2337,8 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     tls_log.trace("{} bio_write_ex: dlen {}", *session, dlen);
     BIO_clear_retry_flags(b);
 
-    if (!session->_output_pending.available()) {
-        tls_log.trace("{} bio_write_ex: nothing pending in output", *session);
+    if (!session->output_available()) {
+        tls_log.trace("{} bio_write_ex: write pending", *session);
         BIO_set_retry_write(b);
         return 0;
     }
@@ -2303,17 +2346,18 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     try {
         size_t n;
 
-        if (!session->_output_pending.failed()) {
+        if (!session->output_pending().failed()) {
             scattered_message<char> msg;
             msg.append(std::string_view(data, dlen));
             n = msg.size();
-            session->_output_pending = session->_out.put(std::move(msg).release());
+            // Important here to use the assign_output_pending function.  This ensures
+            // that there are no outstanding writes in progress and sets the
+            // output_pending flag
+            session->assign_output_pending(session->out().put(std::move(msg).release()));
             tls_log.trace("{} bio_write_ex: Appended {} bytes to output pending", *session, n);
-        }
-
-        if (session->_output_pending.failed()) {
+        } else {
             tls_log.debug("{} bio_write_ex: output pending has error", *session);
-            std::rethrow_exception(session->_output_pending.get_exception());
+            std::rethrow_exception(session->output_pending().get_exception());
         }
 
         if (written != nullptr) {
@@ -2324,11 +2368,11 @@ int bio_write_ex(BIO* b, const char * data, size_t dlen, size_t * written) {
     } catch(const std::system_error & e) {
         tls_log.debug("{} bio_write_ex: system error occurred: {}", *session, e.what());
         ERR_raise_data(ERR_LIB_SYS, e.code().value(), e.what());
-        session->_output_pending = make_exception_future<>(std::current_exception());
+        session->assign_output_error(std::current_exception());
     } catch(...) {
         tls_log.debug("{} bio_write_ex: unknown error occurred", *session);
         ERR_raise(ERR_LIB_SYS, EIO);
-        session->_output_pending = make_exception_future<>(std::current_exception());
+        session->assign_output_error(std::current_exception());
     }
 
     return 0;
@@ -2350,15 +2394,15 @@ int bio_read_ex(BIO* b, char * data, size_t dlen, size_t *readbytes) {
         return 0;
     }
 
-    if (session->_input.empty()) {
+    if (session->input().empty()) {
         tls_log.trace("{} bio_read_ex: input empty", *session);
         BIO_set_retry_read(b);
         return 0;
     }
 
-    auto n = std::min(dlen, session->_input.size());
-    memcpy(data, session->_input.get(), n);
-    session->_input.trim_front(n);
+    auto n = std::min(dlen, session->input().size());
+    memcpy(data, session->input().get(), n);
+    session->input().trim_front(n);
     if (readbytes != nullptr) {
         *readbytes = n;
     }
