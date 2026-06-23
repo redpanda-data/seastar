@@ -336,3 +336,10 @@ cooking_ingredient (lz4
     CONFIGURE_COMMAND <DISABLE>
     BUILD_COMMAND <DISABLE>
     INSTALL_COMMAND ${make_command} PREFIX=<INSTALL_DIR> install)
+
+# Header-only library used by chunked_hash_map. Pinned to the same commit
+# (v4.4.0) consumed by Redpanda.
+cooking_ingredient (unordered_dense
+  EXTERNAL_PROJECT_ARGS
+    URL https://github.com/martinus/unordered_dense/archive/f30ed41b58af8c79788e8581fe57a6faf856258e.tar.gz
+    URL_MD5 0370e4a35c1e573aa6639fde97f0c93f)
