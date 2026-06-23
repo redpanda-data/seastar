@@ -542,6 +542,7 @@ add_library (seastar
   include/seastar/core/cacheline.hh
   include/seastar/core/checked_ptr.hh
   include/seastar/core/chunked_fifo.hh
+  include/seastar/core/chunked_hash_map.hh
   include/seastar/core/chunked_vector.hh
   include/seastar/core/circular_buffer.hh
   include/seastar/core/circular_buffer_fixed_capacity.hh
