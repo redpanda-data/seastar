@@ -890,6 +890,7 @@ target_link_libraries (seastar
     fmt::fmt
     lz4::lz4
     unordered_dense::unordered_dense
+    absl::hash
   PRIVATE
     ${CMAKE_DL_LIBS}
     $<$<BOOL:${Seastar_USE_GNUTLS}>:GnuTLS::gnutls>
