@@ -92,6 +92,7 @@ macro (seastar_find_dependencies)
   # distributions. When it is not installed, Seastar's own build fetches it
   # (see CMakeLists.txt); consumers that lack it must provide it themselves.
   seastar_find_dep (unordered_dense)
+  seastar_find_dep (absl CONFIG REQUIRED)
   seastar_find_dep (GnuTLS 3.7.4)
   seastar_find_dep (OpenSSL 3.0)
   if (Seastar_IO_URING)
