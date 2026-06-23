@@ -57,6 +57,11 @@ struct config {
     bool allow_protobuf = false; // protobuf support is experimental and off by default
     int handle = metrics::default_handle(); //!< Handle that specifies which metric implementation to query
     sstring route = "/metrics"; //!< Name of the route on which to expose the metrics
+    //!< If set, log a (rate-limited) warning whenever a single metric family
+    //!< aggregates to more than this many series. A very large aggregated
+    //!< series count usually indicates unbounded metric label cardinality,
+    //!< which is typically a bug. Set to std::nullopt to disable the warning.
+    std::optional<size_t> aggregation_warn_threshold = std::nullopt;
 };
 
 future<> start(httpd::http_server_control& http_server, config ctx);

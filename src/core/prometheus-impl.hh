@@ -150,6 +150,9 @@ public:
     bool empty() const noexcept {
         return _values.empty();
     }
+    size_t size() const noexcept {
+        return _values.size();
+    }
 };
 
 }
