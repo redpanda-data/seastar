@@ -417,6 +417,35 @@ set (Seastar_GEN_BINARY_DIR ${Seastar_BINARY_DIR}/gen)
 include (SeastarDependencies)
 seastar_find_dependencies ()
 
+# unordered_dense is header-only and not reliably packaged by distributions.
+# When seastar_find_dependencies() did not locate an installed copy (e.g. in
+# CI), fetch the pinned version so the build is self-contained. This lives in
+# the Seastar build only, not in SeastarDependencies, so consumers that use
+# find_package(Seastar) never trigger a download.
+if (NOT TARGET unordered_dense::unordered_dense)
+  include (FetchContent)
+  FetchContent_Declare (unordered_dense
+    URL https://github.com/martinus/unordered_dense/archive/f30ed41b58af8c79788e8581fe57a6faf856258e.tar.gz
+    URL_HASH MD5=0370e4a35c1e573aa6639fde97f0c93f)
+  FetchContent_GetProperties (unordered_dense)
+  if (NOT unordered_dense_POPULATED)
+    # Populate (download) only; we deliberately do not add it as a subproject
+    # (see below). CMP0169 OLD keeps the bare Populate() form available.
+    if (POLICY CMP0169)
+      cmake_policy (SET CMP0169 OLD)
+    endif ()
+    FetchContent_Populate (unordered_dense)
+  endif ()
+  # Expose the fetched headers as an IMPORTED target rather than building it as
+  # a subproject, so that install(EXPORT) for Seastar (which PUBLIC-links it)
+  # does not require exporting a fetched target. Downstream consumers resolve
+  # unordered_dense themselves via SeastarDependencies.
+  add_library (unordered_dense_fetched INTERFACE IMPORTED GLOBAL)
+  set_target_properties (unordered_dense_fetched PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${unordered_dense_SOURCE_DIR}/include")
+  add_library (unordered_dense::unordered_dense ALIAS unordered_dense_fetched)
+endif ()
+
 # Private build dependencies not visible to consumers
 find_package (ragel 6.10 REQUIRED)
 find_package (Threads REQUIRED)
@@ -914,6 +943,7 @@ target_link_libraries (seastar
     c-ares::cares
     fmt::fmt
     lz4::lz4
+    unordered_dense::unordered_dense
   PRIVATE
     ${CMAKE_DL_LIBS}
     StdAtomic::atomic
