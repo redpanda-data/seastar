@@ -343,3 +343,14 @@ cooking_ingredient (unordered_dense
   EXTERNAL_PROJECT_ARGS
     URL https://github.com/martinus/unordered_dense/archive/f30ed41b58af8c79788e8581fe57a6faf856258e.tar.gz
     URL_MD5 0370e4a35c1e573aa6639fde97f0c93f)
+
+# Used by chunked_hash_map for absl::Hash support. Pinned to the same LTS
+# release (20250814.1) consumed by Redpanda.
+cooking_ingredient (absl
+  EXTERNAL_PROJECT_ARGS
+    URL https://github.com/abseil/abseil-cpp/releases/download/20250814.1/abseil-cpp-20250814.1.tar.gz
+    URL_MD5 d4d3c25f78e28d61ad83e54cd1116933
+  CMAKE_ARGS
+    -DABSL_PROPAGATE_CXX_STD=ON
+    -DABSL_ENABLE_INSTALL=ON
+    -DBUILD_TESTING=OFF)
