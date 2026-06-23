@@ -33,6 +33,7 @@ debian_packages=(
     doxygen
     g++
     gcc
+    libabsl-dev
     libboost-all-dev
     libc-ares-dev
     libcrypto++-dev
@@ -113,6 +114,7 @@ redhat_packages=(
 
 fedora_packages=(
     "${redhat_packages[@]}"
+    abseil-cpp-devel
     boost-devel
     fmt-devel
     gcc-c++
@@ -166,6 +168,7 @@ centos9_packages=(
 # 3) aur installations require having sudo and being
 #    a sudoer. makepkg does not work otherwise.
 arch_packages=(
+    abseil-cpp
     boost
     boost-libs
     c-ares

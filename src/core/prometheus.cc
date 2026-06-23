@@ -911,6 +911,29 @@ details::family_filter_t details::make_family_filter(std::vector<details::name_f
     };
 }
 
+// Warn (rate-limited) when a single metric family aggregates to a suspiciously
+// large number of series, which usually points at unbounded label cardinality.
+// Disabled when config::aggregation_warn_threshold is unset.
+static void warn_if_aggregation_cardinality_high(
+  const config& cfg, std::string_view family_name, size_t aggregated_count) {
+    if (!cfg.aggregation_warn_threshold
+        || aggregated_count <= *cfg.aggregation_warn_threshold) {
+        return;
+    }
+    // Rate-limit per family, so that one persistently noisy family does not
+    // mask the warnings for every other family that also exceeds the
+    // threshold, while still avoiding a warning on every scrape.
+    static thread_local std::unordered_map<sstring, logger::rate_limit> rate_limits;
+    auto it = rate_limits.try_emplace(
+      sstring(family_name), std::chrono::minutes(5)).first;
+    seastar_logger.log(
+      log_level::error, it->second,
+      "prometheus: metric family '{}' aggregated to {} series, exceeding the "
+      "warning threshold of {}; this likely indicates unbounded metric label "
+      "cardinality",
+      family_name, aggregated_count, *cfg.aggregation_warn_threshold);
+}
+
 struct write_context {
     output_stream<char>& out;
     const config& ctx;
@@ -957,6 +980,10 @@ future<> write_context::write_text_representation() {
                 out.write(s.data(), s.size()).get();
                 thread::maybe_yield();
             });
+            if (should_aggregate) {
+                warn_if_aggregation_cardinality_high(
+                  ctx, metric_family.name(), aggregated_values.size());
+            }
             if (!aggregated_values.empty()) {
                 for (auto&& h : aggregated_values.get_values()) {
                     s.clear();
@@ -1002,6 +1029,10 @@ future<> write_context::write_protobuf_representation() {
                 empty_metric = false;
             }
         });
+        if (should_aggregate) {
+            warn_if_aggregation_cardinality_high(
+              ctx, metric_family.name(), aggregated_values.size());
+        }
         for (auto& [_, value] : aggregated_values.get_values()) {
             fill_metric(mtf, value.m, value.labels, ctx);
             empty_metric = false;

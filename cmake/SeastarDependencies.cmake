@@ -88,6 +88,11 @@ macro (seastar_find_dependencies)
   endif()
   seastar_find_dep (fmt 8.1.1 REQUIRED)
   seastar_find_dep (lz4 1.7.3 REQUIRED)
+  # Not REQUIRED: unordered_dense is header-only and not reliably packaged by
+  # distributions. When it is not installed, Seastar's own build fetches it
+  # (see CMakeLists.txt); consumers that lack it must provide it themselves.
+  seastar_find_dep (unordered_dense)
+  seastar_find_dep (absl CONFIG REQUIRED)
   seastar_find_dep (GnuTLS 3.7.4)
   seastar_find_dep (OpenSSL 3.0)
   if (Seastar_IO_URING)
