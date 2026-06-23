@@ -325,6 +325,10 @@ seastar_add_test (chunked_vector
   KIND BOOST
   SOURCES chunked_vector_test.cc)
 
+seastar_add_test (chunked_hash_map
+  KIND BOOST
+  SOURCES chunked_hash_map_test.cc)
+
 seastar_add_test (linux_perf_event
   KIND BOOST
   SOURCES linux_perf_event_test.cc ../perf/linux_perf_event.cc)
