@@ -20,11 +20,11 @@
 
 #include <boost/container_hash/hash_fwd.hpp>
 #include <ranges>
+#include <seastar/core/chunked_hash_map.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/metrics_api.hh>
 #include <string_view>
 
-#include <unordered_map>
 #include <vector>
 #include <string>
 
@@ -113,7 +113,7 @@ class metric_aggregate_by_labels {
 
 public:
     using label_list_type = std::vector<std::string>;
-    using map_type = std::unordered_map<label_key, labels_value>;
+    using map_type = chunked_hash_map<label_key, labels_value>;
     const label_list_type& _labels_to_aggregate_by;
     label_key scratch_key;
     map_type _values;
