@@ -262,6 +262,10 @@ seastar_add_test (chunked_fifo
   KIND BOOST
   SOURCES chunked_fifo_test.cc)
 
+seastar_add_test (chunked_vector
+  KIND BOOST
+  SOURCES chunked_vector_test.cc)
+
 seastar_add_test (chunk_parsers
   SOURCES chunk_parsers_test.cc)
 
