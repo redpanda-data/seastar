@@ -135,6 +135,34 @@ public:
     chunked_vector(std::initializer_list<value_type> elems)
       : chunked_vector(elems.begin(), elems.end()) {}
 
+#ifdef __cpp_lib_containers_ranges
+  /**
+   * @brief Construct a new vector from a range
+   *
+   * This constructor will copy or move from the range depending on the value
+   * category of the elements NOT the one of the range. I.e.
+   * `chunked_vector(std::move(src))` will not necessarily invoke move
+   * constructor on the elements of `src`. For example, an rvalue `std::span`
+   * is a non-owning view, and moving from its elements would be a bug.
+   * Similar for most of the standard library views.
+   *
+   * To ensure move semantics from the range elements, use
+   * `std::views::as_rvalue`.
+   *
+   * https://en.cppreference.com/w/cpp/ranges/as_rvalue_view.html
+   */
+  template <typename Range>
+    requires(std::ranges::range<Range>)
+  // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+  chunked_vector(std::from_range_t, Range &&range) : chunked_vector() {
+    if constexpr (std::ranges::sized_range<Range>) {
+      reserve(std::ranges::size(range));
+    }
+    std::copy(std::ranges::begin(range), std::ranges::end(range),
+              std::back_inserter(*this));
+  }
+#endif
+
     chunked_vector& operator=(chunked_vector&& other) noexcept {
         if (this != &other) {
             this->_size = other._size;
