@@ -578,4 +578,65 @@ BOOST_AUTO_TEST_CASE(InPlaceSingleElement) {
     BOOST_REQUIRE_EQUAL(v[0].second, 3);
 }
 
+#ifdef __cpp_lib_containers_ranges
+BOOST_AUTO_TEST_CASE(FromRange) {
+    std::vector<int32_t> buffer;
+    buffer.reserve(10);
+    for (int i = 0; i < 10; ++i) {
+        buffer.push_back(i);
+    }
+    auto vec = chunked_vector<int32_t>(std::from_range, buffer);
+    ASSERT_VALID(vec);
+    BOOST_REQUIRE(std::ranges::equal(vec, buffer));
+}
+
+BOOST_AUTO_TEST_CASE(FromRangeUnsized) {
+    std::list<int32_t> input{1, 2, 3, 4, 5};
+    auto vec = chunked_vector<int32_t>(std::from_range, input);
+    ASSERT_VALID(vec);
+    BOOST_REQUIRE(std::ranges::equal(vec, input));
+}
+
+namespace {
+struct move_only_t {
+    move_only_t() = default;
+    move_only_t(move_only_t&) = delete;
+    move_only_t& operator=(move_only_t&) = delete;
+    move_only_t(move_only_t&&) = default;
+    move_only_t& operator=(move_only_t&&) = default;
+    ~move_only_t() = default;
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(FromRangeMove) {
+    static_assert(
+      !(std::is_copy_constructible_v<move_only_t>
+        || std::is_copy_assignable_v<move_only_t>));
+
+    auto src = chunked_vector<move_only_t>();
+    src.emplace_back();
+    src.emplace_back();
+
+    // From ref.
+    auto vec = chunked_vector<move_only_t>(
+      std::from_range, src | std::views::as_rvalue);
+    ASSERT_VALID(vec);
+    BOOST_REQUIRE_EQUAL(vec.size(), 2u);
+
+    // From temporary.
+    auto vec2 = chunked_vector<move_only_t>(
+      std::from_range, chunked_vector<move_only_t>() | std::views::as_rvalue);
+    ASSERT_VALID(vec2);
+    BOOST_REQUIRE(vec2.empty());
+}
+
+BOOST_AUTO_TEST_CASE(FromRangeCopy) {
+    chunked_vector<int> src;
+    static_assert(!std::is_copy_constructible_v<decltype(src)>);
+    auto vec = chunked_vector<int>(std::from_range, src);
+    ASSERT_VALID(vec);
+    BOOST_REQUIRE(vec.empty());
+}
+#endif
+
 } // namespace
