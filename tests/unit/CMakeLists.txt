@@ -270,6 +270,9 @@ seastar_add_test (chunked_hash_map
   KIND BOOST
   SOURCES chunked_hash_map_test.cc)
 
+seastar_add_test (chunked_vector_async
+  SOURCES chunked_vector_async_test.cc)
+
 seastar_add_test (chunk_parsers
   SOURCES chunk_parsers_test.cc)
 

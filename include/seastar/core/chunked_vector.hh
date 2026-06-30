@@ -38,6 +38,19 @@
 
 namespace seastar {
 
+template <class T>
+class future;
+
+template<typename T>
+class chunked_vector;
+
+// Defined in <seastar/core/chunked_vector_async.hh>; declared here so they can
+// be befriended for direct fragment access.
+template<typename T>
+future<void> chunked_vector_fill_async(chunked_vector<T>& vec, const T& value);
+template<typename T>
+future<void> chunked_vector_clear_async(chunked_vector<T>& vec);
+
 /**
  * A chunked vector is a container that provides random access like a
  * vector, but does not store its data in contiguous memory.
@@ -563,6 +576,11 @@ private:
 
 private:
     friend class chunked_vector_validator;
+    template<typename U>
+    friend future<void>
+    chunked_vector_fill_async(chunked_vector<U>& vec, const U& value);
+    template<typename U>
+    friend future<void> chunked_vector_clear_async(chunked_vector<U>& vec);
     chunked_vector(const chunked_vector&) noexcept = default;
 
     size_t _size{0};
