@@ -91,27 +91,6 @@ using chunked_hash_map = ankerl::unordered_dense::segmented_map<
   ankerl::unordered_dense::bucket_type::standard,
   chunked_vector<ankerl::unordered_dense::bucket_type::standard>>;
 
-namespace internal {
-template<typename Range>
-struct chunked_hash_map_from_range_impl {
-    using value_t = std::ranges::range_value_t<std::decay_t<Range>>;
-    using first_t = typename value_t::first_type;
-    using second_t = typename value_t::second_type;
-    using ret_t = chunked_hash_map<first_t, second_t>;
-};
-} // namespace internal
-
-// reserves if range size is known
-template<typename Range>
-typename internal::chunked_hash_map_from_range_impl<Range>::ret_t
-chunked_hash_map_from_range(Range&& range) {
-    size_t size = 0;
-    if constexpr (std::ranges::sized_range<Range>) {
-        size = std::ranges::size(range);
-    }
-    return {std::ranges::begin(range), std::ranges::end(range), size};
-};
-
 /**
  * @brief A set counterpart of chunked_hash_map (uses a chunked vector as the
  * underlying storage).
@@ -130,6 +109,44 @@ using chunked_hash_set = ankerl::unordered_dense::segmented_set<
   chunked_vector<Key>,
   ankerl::unordered_dense::bucket_type::standard,
   chunked_vector<ankerl::unordered_dense::bucket_type::standard>>;
+
+namespace internal {
+template<typename Range>
+struct chunked_hash_map_from_range_impl {
+    using value_t = std::ranges::range_value_t<std::decay_t<Range>>;
+    using first_t = typename value_t::first_type;
+    using second_t = typename value_t::second_type;
+    using ret_t = chunked_hash_map<std::remove_cv_t<first_t>, second_t>;
+};
+} // namespace internal
+
+// reserves if range size is known
+template<typename TargetTable, typename Range>
+requires std::ranges::input_range<Range>
+    && std::convertible_to<std::ranges::range_reference_t<Range>, typename TargetTable::value_type>
+TargetTable chunked_table_from_range(Range&& range) {
+    size_t size = 0;
+    if constexpr (std::ranges::sized_range<Range>) {
+        size = std::ranges::size(range);
+    }
+    return {std::ranges::begin(range), std::ranges::end(range), size};
+}
+
+// reserves if range size is known
+template<std::ranges::input_range Range>
+auto chunked_hash_map_from_range(Range&& range) {
+    return chunked_table_from_range<
+      typename internal::chunked_hash_map_from_range_impl<Range>::ret_t>(
+      std::forward<Range>(range));
+}
+
+// reserves if range size is known
+template<std::ranges::input_range Range>
+auto chunked_hash_set_from_range(Range&& range) {
+    return chunked_table_from_range<
+      chunked_hash_set<std::ranges::range_value_t<std::decay_t<Range>>>>(
+      std::forward<Range>(range));
+}
 
 /// Returns a lower bound on the memory currently being held by `m`.
 template<
