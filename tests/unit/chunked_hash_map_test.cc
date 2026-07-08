@@ -19,6 +19,7 @@
  * Copyright 2024 Redpanda Data, Inc.
  */
 
+#include <seastar/core/sstring.hh>
 #define BOOST_TEST_MODULE chunked_hash_map
 
 #include <seastar/core/chunked_hash_map.hh>
@@ -28,11 +29,15 @@
 #include <array>
 #include <list>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 using seastar::chunked_hash_map;
+using seastar::chunked_hash_set;
 using seastar::chunked_hash_map_from_range;
+using seastar::chunked_hash_set_from_range;
+using seastar::chunked_table_from_range;
 
 struct foo_with_std_hash {
     int a;
@@ -82,14 +87,14 @@ BOOST_AUTO_TEST_CASE(test_move_assignment) {
     other_map = std::move(map);
 }
 
-BOOST_AUTO_TEST_CASE(from_range_vector) {
+BOOST_AUTO_TEST_CASE(map_from_range_vector) {
     std::vector<std::pair<int, int>> input{{1, 10}, {2, 20}, {3, 30}};
     auto map = chunked_hash_map_from_range(input);
     chunked_hash_map<int, int> expected{{1, 10}, {2, 20}, {3, 30}};
     BOOST_REQUIRE(map == expected);
 }
 
-BOOST_AUTO_TEST_CASE(from_range_list) {
+BOOST_AUTO_TEST_CASE(map_from_range_list) {
     std::list<std::pair<std::string, int>> input{
       {"one", 1}, {"two", 2}, {"three", 3}};
     auto map = chunked_hash_map_from_range(input);
@@ -98,9 +103,41 @@ BOOST_AUTO_TEST_CASE(from_range_list) {
     BOOST_REQUIRE(map == expected);
 }
 
-BOOST_AUTO_TEST_CASE(from_range_array) {
-    std::array<std::pair<int, std::string>, 2> input{{{1, "one"}, {2, "two"}}};
+BOOST_AUTO_TEST_CASE(map_from_range_list_hetero) {
+    using hetero_map_t = chunked_hash_map<
+      std::string,
+      int,
+      ankerl::unordered_dense::hash<std::string_view>,
+      std::equal_to<std::string_view>>;
+    std::list<std::pair<seastar::sstring, int>> input{
+      {"one", 1}, {"two", 2}, {"three", 3}};
+    auto map = chunked_table_from_range<hetero_map_t>(input);
+    hetero_map_t expected{
+      {"one", 1}, {"two", 2}, {"three", 3}};
+    BOOST_REQUIRE(map == expected);
+}
+
+BOOST_AUTO_TEST_CASE(map_from_range_array) {
+    std::array<std::pair<const int, std::string>, 2> input{{{1, "one"}, {2, "two"}}};
     auto map = chunked_hash_map_from_range(input);
     chunked_hash_map<int, std::string> expected{{1, "one"}, {2, "two"}};
     BOOST_REQUIRE(map == expected);
+}
+
+BOOST_AUTO_TEST_CASE(set_from_range_vector) {
+    std::vector<std::string> input{"foo", "bar", "baz"};
+    auto set = chunked_hash_set_from_range(input);
+    chunked_hash_set<std::string> expected{"foo", "bar", "baz"};
+    BOOST_REQUIRE(set == expected);
+}
+
+BOOST_AUTO_TEST_CASE(set_from_range_vector_hetero) {
+    using hetero_set_t = chunked_hash_set<
+      std::string,
+      ankerl::unordered_dense::hash<std::string_view>,
+      std::equal_to<std::string_view>>;
+    std::vector<seastar::sstring> input{"foo", "bar", "baz"};
+    auto set = chunked_table_from_range<hetero_set_t>(input);
+    hetero_set_t expected{"foo", "bar", "baz"};
+    BOOST_REQUIRE(set == expected);
 }
