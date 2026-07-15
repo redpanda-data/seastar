@@ -25,6 +25,7 @@
 
 #include <seastar/core/internal/cpu_profiler.hh>
 #include <seastar/core/scheduling.hh>
+#include <seastar/core/thread_impl.hh>
 #include <seastar/util/log.hh>
 
 namespace seastar {
@@ -117,13 +118,20 @@ void cpu_profiler::on_signal() {
     // is currently being unwound and avoid taking a profiling sample if so.
     //
     // Note: this only protects against C++ exceptions, therefore foreign
-    // exceptions or long jumps could still cause segfaults within the profiler.
+    // exceptions could still cause segfaults within the profiler.
     const bool no_uncaught_exceptions = std::uncaught_exceptions() == 0;
 
     if (force_drop_stacktraces) {
         _stats.dropped_samples_from_manual_disablement++;
     } else if (!no_uncaught_exceptions) {
         _stats.dropped_samples_from_exceptions++;
+    } else if (thread_impl::is_context_switch_in_progress()) {
+        // While a seastar::thread switches stacks the register state is
+        // inconsistent with the unwind info (glibc's swapcontext/longjmp
+        // clobber the link register on aarch64 while their CFI still claims
+        // the return address lives there), so backtracing from here would
+        // walk garbage frames and can crash in libgcc's unwinder.
+        _stats.dropped_samples_from_context_switches++;
     } else if (auto guard_opt = _traces_mutex.try_lock(); guard_opt.has_value()) {
         // Skip the sample if the main thread is currently reading
         // _traces. This case shouldn't happen often though.
