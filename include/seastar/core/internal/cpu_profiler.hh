@@ -82,19 +82,22 @@ struct cpu_profiler_stats {
     unsigned dropped_samples_from_exceptions{0};
     unsigned dropped_samples_from_buffer_full{0};
     unsigned dropped_samples_from_mutex_contention{0};
+    unsigned dropped_samples_from_context_switches{0};
 
     void clear_dropped() {
         dropped_samples_from_manual_disablement = 0;
         dropped_samples_from_exceptions = 0;
         dropped_samples_from_buffer_full = 0;
         dropped_samples_from_mutex_contention = 0;
+        dropped_samples_from_context_switches = 0;
     }
 
     unsigned sum_dropped() const {
         return dropped_samples_from_manual_disablement
             + dropped_samples_from_buffer_full
             + dropped_samples_from_exceptions
-            + dropped_samples_from_mutex_contention;
+            + dropped_samples_from_mutex_contention
+            + dropped_samples_from_context_switches;
     }
 };
 
