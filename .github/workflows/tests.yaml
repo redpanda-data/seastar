@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         compiler: [clang++, g++]
-        standard: [20, 23]
+        standard: [23, 26]
         mode: [dev, debug, release]
     with:
       compiler: ${{ matrix.compiler }}
