@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cmath>
 #include <coroutine>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -4469,6 +4470,64 @@ unsigned smp::adjust_max_networking_aio_io_control_blocks(unsigned network_iocbs
     return network_iocbs;
 }
 
+// Series 6+ kernels saw the new EEVDF scheduler introduced and heavy code churn
+// in that
+//
+// [6.12, 7.1) has one or many bugs that cause the scheduler to completely
+// deadlock the system if there is a busy spinning thread (like seastar).
+// The fixes have been backported to the LTS version 6.12 and 6.18
+// so later series are exempted again.
+// The root trigger for this is having a (root) cgroup with raised cpu weight
+// which makes them directly compete with kernel threads. We have seen issues
+// because of this repeatedly in the past.
+// This is reliably observed when running in kubernetes which bumps its
+// root/top-level cgroup cpu weight by some (weird) formula.
+// While this scenario could theoretically also happen otherwise we in practice
+// only see it in kubernetes (even changed systemd services don't touch the root
+// slice) and hence we limit our detection to kubernetes. An alternative would
+// be to just check the cpu weight of our top most cgroup slice. However, this
+// fails on k8s (and elsewhere) as they use private cgroup namespaces which
+// makes the pod only see its own weight.
+static bool k8s_eevdf_deadlock() {
+    const auto ku = internal::kernel_uname();
+    if (!ku.whitelisted({"6.12"}) || ku.whitelisted({"7.1"})) {
+        return false;
+    }
+    // LTS series with the fixes backported. Note a three-component version only
+    // matches the same version.patchlevel series, so these exemptions don't
+    // apply to any other series.
+    if (ku.whitelisted({"6.12.94", "6.18.38"})) {
+        return false;
+    }
+    return std::getenv("KUBERNETES_SERVICE_HOST") != nullptr;
+}
+
+// We have repeatedly seen issues where seastar's shard-pinning and busy
+// spinning has caused scheduling issues with other kernel threads (most often
+// the DIO thread).
+// Usually this often requires an additional ingredient such as kubernetes
+// or scheduling tuning (e.g.: from tuned - handled in a different place).
+// If we detect these conditions and affected kernel versions, we automatically
+// enable overdirectly provisioning to avoid the issue.
+static bool should_auto_overprovision(const reactor_options& reactor_opts) {
+    // Treat --poll-aio as a cop-out. Alternative would be to make
+    // --overprovisioned a proper tri-state but there is a risk people have just
+    // set it to false by default explicitly.
+    // --poll-aio is safer from the POV as you can't set it with a special flag
+    // via rpk (like you can do with overprovisioned)
+    if (!reactor_opts.poll_aio.defaulted() && reactor_opts.poll_aio.get_value()) {
+        return false;
+    }
+
+    if (k8s_eevdf_deadlock()) {
+        seastar_logger.info("Automatically enabling --overprovisioned: running in k8s on "
+            "kernel versions with known scheduling issues");
+        return true;
+    }
+
+    return false;
+}
+
 void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_opts)
 {
 #ifdef SEASTAR_TLS_DUAL_BACKEND
@@ -4481,7 +4540,12 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     internal::crypto::set_provider(reactor_opts.crypto_provider.get_selected_candidate()());
 #endif
 
-    bool use_transparent_hugepages = !reactor_opts.overprovisioned;
+    bool overprovisioned = bool(reactor_opts.overprovisioned);
+    if (!overprovisioned && should_auto_overprovision(reactor_opts)) {
+        overprovisioned = true;
+    }
+
+    bool use_transparent_hugepages = !overprovisioned;
 
 #ifndef SEASTAR_NO_EXCEPTION_HACK
     if (smp_opts.enable_glibc_exception_scaling_workaround.get_value()) {
@@ -4515,7 +4579,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     _using_dpdk = native_stack && native_stack->dpdk_pmd;
 #endif
     auto thread_affinity = smp_opts.thread_affinity.get_value();
-    if (reactor_opts.overprovisioned
+    if (overprovisioned
            && smp_opts.thread_affinity.defaulted()) {
         thread_affinity = false;
     }
@@ -4529,7 +4593,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
 
     resource::configuration rc;
 
-    rc.overcommit = reactor_opts.overprovisioned;
+    rc.overcommit = overprovisioned;
 
     smp::_tmain = std::this_thread::get_id();
     resource::cpuset cpu_set = get_current_cpuset();
@@ -4676,10 +4740,10 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
 
     reactor_config reactor_cfg = {
         .task_quota = std::chrono::duration_cast<sched_clock::duration>(reactor_opts.task_quota_ms.get_value() * 1ms),
-        .max_poll_time = [&reactor_opts] () -> std::chrono::nanoseconds {
+        .max_poll_time = [&] () -> std::chrono::nanoseconds {
             if (reactor_opts.poll_mode) {
                 return std::chrono::nanoseconds::max();
-            } else if (reactor_opts.overprovisioned && reactor_opts.idle_poll_time_us.defaulted()) {
+            } else if (overprovisioned && reactor_opts.idle_poll_time_us.defaulted()) {
                 return 0us;
             } else {
                 return reactor_opts.idle_poll_time_us.get_value() * 1us;
@@ -4694,7 +4758,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
         .max_task_backlog = reactor_opts.max_task_backlog.get_value(),
         .strict_o_direct = !reactor_opts.relaxed_dma,
         .bypass_fsync = reactor_opts.unsafe_bypass_fsync.get_value(),
-        .no_poll_aio = !reactor_opts.poll_aio.get_value() || (reactor_opts.poll_aio.defaulted() && reactor_opts.overprovisioned),
+        .no_poll_aio = !reactor_opts.poll_aio.get_value() || (reactor_opts.poll_aio.defaulted() && overprovisioned),
         .aio_nowait_works = reactor_opts.linux_aio_nowait.get_value(), // Mixed in with filesystem-provided values later
         .abort_on_too_long_task_queue = reactor_opts.abort_on_too_long_task_queue.get_value(),
     };
