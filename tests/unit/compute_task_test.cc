@@ -24,9 +24,11 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/smp.hh>
+#include <seastar/coroutine/maybe_yield.hh>
 
 #include <chrono>
 #include <coroutine>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -154,5 +156,79 @@ SEASTAR_TEST_CASE(compute_task_survives_migration) {
     // are asserted; the shard count is informational.
     BOOST_REQUIRE_GE(shards.size(), 1u);
     BOOST_TEST_MESSAGE(seastar::format("task observed {} distinct shard(s)", shards.size()));
+    co_await compute::stop();
+}
+
+namespace {
+
+// Keeps a shard saturated with runnable foreground work: spin a slice, then
+// yield to the scheduler only when the quota expires, so the shard's task
+// queue is never empty and its idle branch is (almost) never reached.
+future<> burn_cpu_for(std::chrono::steady_clock::duration d) {
+    auto end = std::chrono::steady_clock::now() + d;
+    while (std::chrono::steady_clock::now() < end) {
+        auto spin_end = std::chrono::steady_clock::now() + std::chrono::microseconds(100);
+        while (std::chrono::steady_clock::now() < spin_end) {
+            // burn
+        }
+        co_await coroutine::maybe_yield();
+    }
+}
+
+// Counts, per shard, how many compute iterations executed there. Each
+// iteration burns ~10us so the counts reflect real CPU placement.
+compute::task<std::map<unsigned, uint64_t>> count_executions(int iters) {
+    std::map<unsigned, uint64_t> counts;
+    for (int i = 0; i < iters; ++i) {
+        ++counts[this_shard_id()];
+        auto spin_end = std::chrono::steady_clock::now() + std::chrono::microseconds(10);
+        while (std::chrono::steady_clock::now() < spin_end) {
+            // burn
+        }
+        co_await compute::checkpoint();
+    }
+    co_return counts;
+}
+
+} // anonymous namespace
+
+SEASTAR_TEST_CASE(compute_avoids_busy_shards) {
+    if (smp::count < 4) {
+        BOOST_TEST_MESSAGE("compute_avoids_busy_shards requires 4 shards (run with -c4); skipping");
+        co_return;
+    }
+    co_await compute::start();
+    // Saturate shards 2 and 3 with foreground work for the whole test.
+    auto busy2 = smp::submit_to(2, [] { return burn_cpu_for(std::chrono::seconds(2)); });
+    auto busy3 = smp::submit_to(3, [] { return burn_cpu_for(std::chrono::seconds(2)); });
+    // Let the busy loops saturate their shards before submitting compute work.
+    co_await seastar::sleep(std::chrono::milliseconds(100));
+
+    constexpr int n_tasks = 4;
+    constexpr int iters = 1000;
+    std::vector<future<std::map<unsigned, uint64_t>>> futs;
+    futs.reserve(n_tasks);
+    for (int i = 0; i < n_tasks; ++i) {
+        futs.push_back(compute::submit(count_executions(iters)));
+    }
+
+    uint64_t total = 0;
+    uint64_t on_busy = 0;
+    for (auto& f : futs) {
+        auto counts = co_await std::move(f);
+        for (auto& [shard, n] : counts) {
+            total += n;
+            if (shard >= 2) {
+                on_busy += n;
+            }
+        }
+    }
+    BOOST_REQUIRE_EQUAL(total, uint64_t(n_tasks) * iters);
+    BOOST_TEST_MESSAGE(seastar::format("{} of {} compute iterations ran on the busy shards", on_busy, total));
+    // "Statistically almost none": allow up to 1% for edge windows around the
+    // busy loops' start-up.
+    BOOST_REQUIRE_LE(on_busy, total / 100);
+    co_await std::move(busy2);
+    co_await std::move(busy3);
     co_await compute::stop();
 }
