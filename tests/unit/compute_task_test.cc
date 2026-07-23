@@ -27,6 +27,7 @@
 
 #include <chrono>
 #include <coroutine>
+#include <stdexcept>
 
 using namespace seastar;
 
@@ -89,5 +90,24 @@ SEASTAR_TEST_CASE(compute_completion_is_shard_affine) {
         BOOST_REQUIRE_EQUAL(v, 55u);
         BOOST_REQUIRE_EQUAL(this_shard_id(), submitted_on);
     });
+    co_await compute::stop();
+}
+
+namespace {
+
+compute::task<int> throws_midway() {
+    co_await compute::checkpoint();
+    throw std::runtime_error("boom");
+    co_return 0; // unreachable; satisfies the return_value requirement
+}
+
+} // anonymous namespace
+
+SEASTAR_TEST_CASE(compute_exception_marshals_home) {
+    co_await compute::start();
+    auto submitted_on = this_shard_id();
+    auto fut = compute::submit(throws_midway());
+    BOOST_REQUIRE_THROW(co_await std::move(fut), std::runtime_error);
+    BOOST_REQUIRE_EQUAL(this_shard_id(), submitted_on);
     co_await compute::stop();
 }
