@@ -1,6 +1,6 @@
 # Run-anywhere compute tasks
 
-Date: 2026-07-21 · Status: draft for review · Scope: design only (no implementation yet)
+Date: 2026-07-21 · Status: v0 proof of concept implemented (see docs/superpowers/plans/2026-07-23-run-anywhere-compute-poc.md) · Scope: design + PoC
 
 ## Problem
 
