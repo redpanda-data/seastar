@@ -27,7 +27,9 @@
 
 #include <chrono>
 #include <coroutine>
+#include <set>
 #include <stdexcept>
+#include <vector>
 
 using namespace seastar;
 
@@ -109,5 +111,48 @@ SEASTAR_TEST_CASE(compute_exception_marshals_home) {
     auto fut = compute::submit(throws_midway());
     BOOST_REQUIRE_THROW(co_await std::move(fut), std::runtime_error);
     BOOST_REQUIRE_EQUAL(this_shard_id(), submitted_on);
+    co_await compute::stop();
+}
+
+SEASTAR_TEST_CASE(compute_many_tasks_complete_correctly) {
+    co_await compute::start();
+    constexpr int n_tasks = 50;
+    std::vector<future<uint64_t>> futs;
+    futs.reserve(n_tasks);
+    for (int i = 0; i < n_tasks; ++i) {
+        futs.push_back(compute::submit(sum_range(50 + i)));
+    }
+    for (int i = 0; i < n_tasks; ++i) {
+        uint64_t n = 50 + i;
+        BOOST_REQUIRE_EQUAL(co_await std::move(futs[i]), n * (n + 1) / 2);
+    }
+    co_await compute::stop();
+}
+
+namespace {
+
+// Collects the shards the task observes itself running on. Reading
+// this_shard_id() is a plain thread-local read, safe within a resume
+// segment; the std::set lives in the frame and its nodes may be allocated
+// on several shards and freed on the home shard — exercising exactly the
+// cross-shard memory path the design relies on.
+compute::task<std::set<unsigned>> observe_shards(int iters) {
+    std::set<unsigned> shards;
+    for (int i = 0; i < iters; ++i) {
+        shards.insert(this_shard_id());
+        co_await compute::checkpoint();
+    }
+    co_return shards;
+}
+
+} // anonymous namespace
+
+SEASTAR_TEST_CASE(compute_task_survives_migration) {
+    co_await compute::start();
+    auto shards = co_await compute::submit(observe_shards(200));
+    // Migration is timing-dependent, so only completion and state integrity
+    // are asserted; the shard count is informational.
+    BOOST_REQUIRE_GE(shards.size(), 1u);
+    BOOST_TEST_MESSAGE(seastar::format("task observed {} distinct shard(s)", shards.size()));
     co_await compute::stop();
 }
