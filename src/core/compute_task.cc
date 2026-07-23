@@ -21,6 +21,8 @@
 
 #include <seastar/core/compute_task.hh>
 #include <seastar/core/cacheline.hh>
+#include <seastar/core/reactor.hh>
+#include <seastar/core/smp.hh>
 #include <seastar/util/assert.hh>
 
 #include <boost/lockfree/queue.hpp>
@@ -28,7 +30,9 @@
 #include <atomic>
 #include <cstdint>
 
-namespace seastar::compute::internal {
+namespace seastar::compute {
+
+namespace internal {
 
 namespace {
 
@@ -78,4 +82,53 @@ size_t queue_size() noexcept {
     return s < 0 ? 0 : static_cast<size_t>(s);
 }
 
-} // namespace seastar::compute::internal
+void deliver_on(shard_id home, noncopyable_function<void ()> f) noexcept {
+    // set_value/set_exception do not throw; a failure of the submission
+    // itself (e.g. at shutdown) is swallowed — v0 has no cancellation story.
+    (void)smp::submit_to(home, std::move(f)).handle_exception([] (std::exception_ptr) {});
+}
+
+} // namespace internal
+
+namespace {
+
+// The per-shard participant: runs compute work from the idle branch. Pops
+// and resumes queued tasks until the reactor has real work (poll) or wants
+// a housekeeping iteration (need_preempt); resuming leaves the frame either
+// completed (destroyed) or republished on the queue, so `h` is never touched
+// after resume().
+idle_cpu_handler_result run_some(work_waiting_on_reactor poll) {
+    if (internal::queue_empty()) {
+        return idle_cpu_handler_result::no_more_work;
+    }
+    while (!poll()) {
+        auto h = internal::queue_try_pop();
+        if (!h) {
+            return idle_cpu_handler_result::no_more_work;
+        }
+        h.resume();
+        if (need_preempt()) {
+            // Let the main loop run one housekeeping iteration (pollers,
+            // clocks, preemption-monitor reset). If the shard is still idle
+            // it lands right back here.
+            return idle_cpu_handler_result::interrupted_by_higher_priority_task;
+        }
+    }
+    return idle_cpu_handler_result::interrupted_by_higher_priority_task;
+}
+
+} // anonymous namespace
+
+future<> start() {
+    return smp::invoke_on_all([] {
+        engine().set_compute_idle_handler(run_some);
+    });
+}
+
+future<> stop() {
+    return smp::invoke_on_all([] {
+        engine().clear_compute_idle_handler();
+    });
+}
+
+} // namespace seastar::compute

@@ -23,6 +23,7 @@
 #include <seastar/core/compute_task.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/sleep.hh>
+#include <seastar/core/smp.hh>
 
 #include <chrono>
 #include <coroutine>
@@ -57,4 +58,36 @@ SEASTAR_TEST_CASE(compute_idle_handler_runs_when_idle) {
     co_await seastar::sleep(std::chrono::milliseconds(100));
     engine().clear_compute_idle_handler();
     BOOST_REQUIRE_GT(invocations, 0u);
+}
+
+namespace {
+
+compute::task<uint64_t> sum_range(uint64_t n) {
+    uint64_t acc = 0;
+    for (uint64_t i = 1; i <= n; ++i) {
+        acc += i;
+        co_await compute::checkpoint();
+    }
+    co_return acc;
+}
+
+} // anonymous namespace
+
+SEASTAR_TEST_CASE(compute_submit_completes_with_result) {
+    co_await compute::start();
+    auto v = co_await compute::submit(sum_range(100));
+    BOOST_REQUIRE_EQUAL(v, 5050u);
+    co_await compute::stop();
+}
+
+SEASTAR_TEST_CASE(compute_completion_is_shard_affine) {
+    co_await compute::start();
+    // Submit from the highest shard; the continuation must run there.
+    co_await smp::submit_to(smp::count - 1, [] () -> future<> {
+        auto submitted_on = this_shard_id();
+        auto v = co_await compute::submit(sum_range(10));
+        BOOST_REQUIRE_EQUAL(v, 55u);
+        BOOST_REQUIRE_EQUAL(this_shard_id(), submitted_on);
+    });
+    co_await compute::stop();
 }
