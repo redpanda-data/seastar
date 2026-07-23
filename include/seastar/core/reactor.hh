@@ -348,6 +348,12 @@ private:
     /// Handler's argument is a function that returns true if a task which should be executed on cpu appears or false
     /// otherwise. This function should be used by a handler to return early if a task appears.
     idle_cpu_handler _idle_cpu_handler{ [] (work_waiting_on_reactor) {return idle_cpu_handler_result::no_more_work;} };
+    /// Internal second idle-handler slot for run-anywhere compute work (see
+    /// seastar::compute). Same contract as _idle_cpu_handler; consulted from
+    /// the idle branch only when _have_compute_idle_handler is set, keeping
+    /// the cost of the unused feature to a single branch on the idle path.
+    idle_cpu_handler _compute_idle_handler{ [] (work_waiting_on_reactor) {return idle_cpu_handler_result::no_more_work;} };
+    bool _have_compute_idle_handler = false;
     std::unique_ptr<network_stack> _network_stack;
     lowres_clock::time_point _lowres_next_timeout = lowres_clock::time_point::max();
     std::optional<pollable_fd> _aio_eventfd;
@@ -657,6 +663,20 @@ public:
     void set_idle_cpu_handler(idle_cpu_handler&& handler) {
         _idle_cpu_handler = std::move(handler);
     }
+    /// \cond internal
+    /// Install the run-anywhere compute participant (see seastar::compute).
+    /// Same contract as set_idle_cpu_handler; a separate slot so the public
+    /// idle handler remains available to applications.
+    void set_compute_idle_handler(idle_cpu_handler&& handler) {
+        _compute_idle_handler = std::move(handler);
+        _have_compute_idle_handler = true;
+    }
+    /// Remove the run-anywhere compute participant.
+    void clear_compute_idle_handler() {
+        _compute_idle_handler = [] (work_waiting_on_reactor) { return idle_cpu_handler_result::no_more_work; };
+        _have_compute_idle_handler = false;
+    }
+    /// \endcond
     void force_poll();
 
     void add_high_priority_task(task*) noexcept;

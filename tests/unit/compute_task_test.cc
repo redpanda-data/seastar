@@ -21,7 +21,10 @@
 
 #include <seastar/testing/test_case.hh>
 #include <seastar/core/compute_task.hh>
+#include <seastar/core/reactor.hh>
+#include <seastar/core/sleep.hh>
 
+#include <chrono>
 #include <coroutine>
 
 using namespace seastar;
@@ -41,4 +44,17 @@ SEASTAR_TEST_CASE(compute_queue_push_pop_roundtrip) {
     BOOST_REQUIRE(compute::internal::queue_empty());
     BOOST_REQUIRE(!compute::internal::queue_try_pop());
     return make_ready_future<>();
+}
+
+SEASTAR_TEST_CASE(compute_idle_handler_runs_when_idle) {
+    unsigned invocations = 0;
+    engine().set_compute_idle_handler([&invocations] (work_waiting_on_reactor) {
+        ++invocations;
+        return idle_cpu_handler_result::no_more_work;
+    });
+    // Sleeping makes this shard idle; the idle branch must consult the
+    // compute handler at least once before the reactor goes to sleep.
+    co_await seastar::sleep(std::chrono::milliseconds(100));
+    engine().clear_compute_idle_handler();
+    BOOST_REQUIRE_GT(invocations, 0u);
 }
