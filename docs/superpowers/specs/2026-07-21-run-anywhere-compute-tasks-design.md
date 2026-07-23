@@ -254,6 +254,33 @@ runtime.
 - **NUMA locality.** Frames allocated on the home shard are accessed remotely while
   migrated. Acceptable for throughput-oriented batch work; revisit if it matters.
 
+## Proof of concept (v0) scope
+
+A deliberately bare-bones cut to prove the mechanism end to end. In scope:
+
+- The `compute::task<T>` coroutine type with its closed awaitable set, and
+  `checkpoint()`.
+- The boundary-crossing semantics: `submit()` from a shard, an ordinary shard-affine
+  future back, result/exception marshaled home over `smp::submit_to`.
+- The global many-to-many queue (lock-free MPMC, relaxed nonempty fast path).
+- The reactor idle hook: a per-shard participant invoked from the idle branch,
+  installed by an explicit opt-in start/stop call.
+
+Deferred from v0 (accepted consequences noted):
+
+- **No producer-side wakeup of parked shards.** A shard blocked in
+  `wait_and_process_events()` will not notice newly submitted compute work until
+  something else wakes it. The submitting shard is awake by definition and picks the
+  task up on its own idle branch, so work always makes progress; other shards join
+  opportunistically. (Completion delivery is unaffected — `smp::submit_to` already
+  wakes the home shard.)
+- **No housekeeping parking.** Every checkpoint yield goes through the global queue,
+  including quota-tick yields on an otherwise idle system. Costs a queue round trip
+  every ~0.5 ms per running task; harmless for a PoC and it exercises the migration
+  path constantly, which is what we want to validate.
+- No metrics, no debug tripwires, no backpressure, no cancellation, no fairness
+  policy — all per the open-questions section above.
+
 ## Addendum: the lifecycle in full detail
 
 The high-level steps above, replayed with every mechanism visible. Suppose a 4-shard
