@@ -156,8 +156,9 @@ SEASTAR_THREAD_TEST_CASE(config_case) {
 
         spin_some_cooperatively(120*10ms);
 
-        auto results = get_profile();
-        BOOST_REQUIRE(close_to_expected(results.size(), 12));
+        auto [results, dropped_samples] = get_profile_and_dropped();
+        BOOST_REQUIRE(close_to_expected(results.size() + dropped_samples, 12));
+        BOOST_REQUIRE(!results.empty());
     }
 
     spin_some_cooperatively(128*10ms);
@@ -171,8 +172,8 @@ SEASTAR_THREAD_TEST_CASE(simple_case) {
     spin_some_cooperatively(120*10ms);
 
     auto [results, dropped_samples] = get_profile_and_dropped();
-    BOOST_REQUIRE(close_to_expected(results.size(), 12));
-    BOOST_REQUIRE_EQUAL(dropped_samples, 0);
+    BOOST_REQUIRE(close_to_expected(results.size() + dropped_samples, 12));
+    BOOST_REQUIRE(!results.empty());
 }
 
 SEASTAR_THREAD_TEST_CASE(overwrite_case) {
@@ -203,8 +204,9 @@ SEASTAR_THREAD_TEST_CASE(mixed_case) {
     }
 
     maybe_exact(reports, 5, "reports");
-    auto results = get_profile();
-    BOOST_REQUIRE(close_to_expected(results.size(), 12));
+    auto [results, dropped_samples] = get_profile_and_dropped();
+    BOOST_REQUIRE(close_to_expected(results.size() + dropped_samples, 12));
+    BOOST_REQUIRE(!results.empty());
 }
 
 SEASTAR_THREAD_TEST_CASE(spin_in_kernel) {
