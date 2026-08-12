@@ -296,6 +296,9 @@ struct uninitialized_wrapper {
 
 public:
     uninitialized_wrapper() noexcept = default;
+    void uninitialized_set_strict(T v) {
+        new (&_v.value) auto(std::forward<T>(v));
+    }
     template<typename... U>
     requires (!std::same_as<std::tuple<std::remove_cv_t<U>...>, std::tuple<tuple_type>>)
     void
@@ -545,6 +548,7 @@ inline void future_state_base::any::check_failure() noexcept {
 }
 
 struct ready_future_marker {};
+struct strict_type_ready_future_marker {};
 struct exception_future_marker {};
 struct future_for_get_promise_marker {};
 
@@ -600,6 +604,13 @@ struct future_state :  public future_state_base, private internal::uninitialized
         move_it(std::move(x));
         return *this;
     }
+    future_state(strict_type_ready_future_marker, T v) noexcept : future_state_base(state::result) {
+      try {
+        this->uninitialized_set_strict(std::forward<T>(v));
+      } catch (...) {
+        new (this) future_state(current_exception_future_marker());
+      }
+    }
     template <typename... A>
     future_state(ready_future_marker, A&&... a) noexcept : future_state_base(state::result) {
       try {
@@ -607,6 +618,10 @@ struct future_state :  public future_state_base, private internal::uninitialized
       } catch (...) {
         new (this) future_state(current_exception_future_marker());
       }
+    }
+    void set_strict(T v) {
+        assert(_u.st == state::future);
+        new (this) future_state(strict_type_ready_future_marker(), std::forward<T>(v));
     }
     template <typename... A>
     void set(A&&... a) noexcept {
@@ -851,7 +866,8 @@ public:
 template <typename T>
 class promise_base_with_type : protected internal::promise_base {
 protected:
-    using future_state = seastar::future_state<future_stored_type_t<T>>;
+    using value_type = future_stored_type_t<T>;
+    using future_state = seastar::future_state<value_type>;
     future_state* get_state() noexcept {
         return static_cast<future_state*>(_state);
     }
@@ -872,6 +888,13 @@ public:
             assert(ptr->_u.st == future_state_base::state::future);
             new (ptr) future_state(std::move(state));
             make_ready<urgent::yes>();
+        }
+    }
+
+    void set_value_strict(value_type v) noexcept {
+        if (auto *s = get_state()) {
+            s->set_strict(std::forward<value_type>(v));
+            make_ready<urgent::no>();
         }
     }
 
@@ -910,6 +933,7 @@ private:
 SEASTAR_MODULE_EXPORT
 template <typename T>
 class promise : private internal::promise_base_with_type<T> {
+    using value_type = typename internal::promise_base_with_type<T>::value_type;
     using future_state = typename internal::promise_base_with_type<T>::future_state;
     future_state _local_state;
 
@@ -952,6 +976,21 @@ public:
     /// on the promise, the future will be become ready, and if a continuation
     /// was attached to the future, it will run.
     future<T> get_future() noexcept;
+
+    /// \brief Sets the promises value using exactly declared type
+    ///
+    /// Forwards the argument and makes them available to the associated
+    /// future. May be called either before or after \c get_future().
+    ///
+    /// The arguments can have either the types the promise is
+    /// templated with, or a corresponding std::tuple. That is, given
+    /// a promise<int, double>, both calls are valid:
+    ///
+    /// pr.set_value_strict(42, 43.0);
+    /// pr.set_value_strict(std::tuple<int, double>(42, 43.0))
+    void set_value_strict(value_type v) noexcept {
+        internal::promise_base_with_type<T>::set_value_strict(std::forward<value_type>(v));
+    }
 
     /// \brief Sets the promises value
     ///
