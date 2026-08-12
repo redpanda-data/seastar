@@ -57,6 +57,10 @@ option (Seastar_TASK_BACKTRACE
   "Collect backtrace at deferring points."
   OFF)
 
+option (Seastar_TASK_CONTEXT
+  "Enable task context propagation for tracing and request-scoped state."
+  ON)
+
 option (Seastar_DEBUG_ALLOCATIONS
   "For now just writes 0xab to newly allocated memory"
   OFF)
@@ -999,6 +1003,11 @@ endif ()
 if (Seastar_TASK_BACKTRACE)
   target_compile_definitions (seastar
     PUBLIC SEASTAR_TASK_BACKTRACE)
+endif ()
+
+if (Seastar_TASK_CONTEXT)
+  target_compile_definitions (seastar
+    PUBLIC SEASTAR_TASK_CONTEXT)
 endif ()
 
 if (Seastar_DEBUG_ALLOCATIONS)

@@ -209,7 +209,8 @@ class smp_message_queue {
         size_t _last_rcv_batch = 0;
     };
     struct work_item : public task {
-        explicit work_item(smp_service_group ssg) : task(current_scheduling_group()), ssg(ssg) {}
+        explicit work_item(smp_service_group ssg)
+            : task(current_scheduling_group(), no_context_tag{}), ssg(ssg) {}
         smp_service_group ssg;
         virtual ~work_item() {}
         virtual void fail_with(std::exception_ptr) = 0;
