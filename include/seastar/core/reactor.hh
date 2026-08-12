@@ -429,6 +429,7 @@ private:
     };
 
     signals _signals;
+    // Syscall thread for every blocking syscall except aio submission fallbacks.
     std::unique_ptr<thread_pool> _thread_pool;
     friend class internal::cpu_stall_detector;
 

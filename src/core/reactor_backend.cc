@@ -41,6 +41,7 @@
 #include "core/reactor_backend.hh"
 #include "core/thread_pool.hh"
 #include "core/syscall_result.hh"
+#include <seastar/core/format.hh>
 #include <seastar/core/internal/buffer_allocator.hh>
 #include <seastar/util/internal/iovec_utils.hh>
 #include <seastar/core/internal/uname.hh>
@@ -119,7 +120,8 @@ aio_storage_context::iocb_pool::iocb_pool() {
 
 aio_storage_context::aio_storage_context(reactor& r)
     : _r(r)
-    , _io_context(0) {
+    , _io_context(0)
+    , _aio_thread_pool(std::make_unique<thread_pool>(seastar::format("syscall-aio-{}", r._id), r._notify_eventfd)) {
     static_assert(max_aio >= reactor::max_queues * reactor::max_queues,
                   "Mismatch between maximum allowed io and what the IO queues can produce");
     internal::setup_aio_context(max_aio, &_io_context);
@@ -127,6 +129,8 @@ aio_storage_context::aio_storage_context(reactor& r)
 }
 
 aio_storage_context::~aio_storage_context() {
+    // Join the syscall thread before destroying the aio context it submits against.
+    _aio_thread_pool.reset();
     internal::io_destroy(_io_context);
 }
 
@@ -264,7 +268,7 @@ void aio_storage_context::schedule_retry() {
         }
         return false;
     }, [this] {
-        return _r._thread_pool->submit<syscall_result<int>>(
+        return _aio_thread_pool->submit<syscall_result<int>>(
                 internal::thread_pool_submit_reason::aio_fallback, [this] () mutable {
             auto r = io_submit(_io_context, _aio_retries.size(), _aio_retries.data());
             return wrap_syscall<int>(r);

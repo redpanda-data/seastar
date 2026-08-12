@@ -42,6 +42,7 @@
 namespace seastar {
 
 class reactor;
+class thread_pool;
 
 // FIXME: merge it with storage context below. At this point the
 // main thing to do is unify the iocb list
@@ -85,6 +86,10 @@ class aio_storage_context {
     pending_aio_retry_t _aio_retries;       // Currently retried iocbs
     future<> _pending_aio_retry_fut = make_ready_future<>();
     internal::linux_abi::io_event _ev_buffer[max_aio];
+    // Give AIO operations their own syscall thread. This keeps them from
+    // queuing behind unrelated blocking syscalls, which would otherwise add
+    // to their latency.
+    std::unique_ptr<thread_pool> _aio_thread_pool;
 
     bool need_to_retry() const noexcept {
         return !_pending_aio_retry.empty() || !_aio_retries.empty();
@@ -103,6 +108,8 @@ public:
     bool submit_work();
     bool can_sleep() const;
     future<> stop() noexcept;
+
+    thread_pool& aio_thread_pool() noexcept { return *_aio_thread_pool; }
 };
 
 class completion_with_iocb {
@@ -236,6 +243,9 @@ public:
 
     virtual pollable_fd_state_ptr make_pollable_fd_state(file_desc fd, pollable_fd::speculation speculate) = 0;
 
+    // Syscall thread for this backend's blocking aio fallbacks, or nullptr if none.
+    virtual thread_pool* aio_thread_pool() noexcept { return nullptr; }
+
 protected:
     reactor_backend(uses_blocking_io blocking_io, supports_aio_fdatasync aio_fdatasync)
         : _blocking_io(blocking_io)
@@ -310,6 +320,8 @@ public:
 
     virtual pollable_fd_state_ptr
     make_pollable_fd_state(file_desc fd, pollable_fd::speculation speculate) override;
+
+    thread_pool* aio_thread_pool() noexcept override { return &_storage_context.aio_thread_pool(); }
 };
 
 class reactor_backend_aio : public reactor_backend {
@@ -362,6 +374,8 @@ public:
 
     virtual pollable_fd_state_ptr
     make_pollable_fd_state(file_desc fd, pollable_fd::speculation speculate) override;
+
+    thread_pool* aio_thread_pool() noexcept override { return &_storage_context.aio_thread_pool(); }
 };
 
 class reactor_backend_uring;
