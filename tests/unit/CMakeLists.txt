@@ -347,6 +347,9 @@ seastar_add_test (circular_buffer_fixed_capacity
   KIND BOOST
   SOURCES circular_buffer_fixed_capacity_test.cc)
 
+seastar_add_test (compute_task
+  SOURCES compute_task_test.cc)
+
 seastar_add_test (condition_variable
   SOURCES condition_variable_test.cc)
 

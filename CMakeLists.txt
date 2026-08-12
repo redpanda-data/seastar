@@ -584,6 +584,7 @@ add_library (seastar
   include/seastar/core/chunked_vector_async.hh
   include/seastar/core/circular_buffer.hh
   include/seastar/core/circular_buffer_fixed_capacity.hh
+  include/seastar/core/compute_task.hh
   include/seastar/core/condition-variable.hh
   include/seastar/core/deleter.hh
   include/seastar/core/disk_params.hh
@@ -751,6 +752,7 @@ add_library (seastar
   include/seastar/websocket/common.hh
   include/seastar/websocket/server.hh
   src/core/alien.cc
+  src/core/compute_task.cc
   src/core/file.cc
   src/core/fair_queue.cc
   src/core/reactor_backend.cc

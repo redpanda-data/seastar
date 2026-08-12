@@ -3531,8 +3531,11 @@ int reactor::do_run() {
                 // we can't run check_for_work(), because that can run tasks in the context
                 // of the idle handler which change its state, without the idle handler expecting
                 // it.  So run pure_check_for_work() instead.
+                if (_have_compute_idle_handler) {
+                    go_to_sleep &= _compute_idle_handler(pure_check_for_work) == idle_cpu_handler_result::no_more_work;
+                }
                 auto handler_result = _idle_cpu_handler(pure_check_for_work);
-                go_to_sleep = handler_result == idle_cpu_handler_result::no_more_work;
+                go_to_sleep &= handler_result == idle_cpu_handler_result::no_more_work;
             } catch (...) {
                 report_exception("Exception while running idle cpu handler", std::current_exception());
             }
