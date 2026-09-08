@@ -109,6 +109,7 @@ group "configure.py"
     --compiler "$CPP"           \
     --c-compiler "$CC"          \
     --mode "$MODE"              \
+    --heap-profiling            \
     "${cook_args[@]}"           \
     "${ccache_opt[@]}"          \
     $OPTIONS                    \
