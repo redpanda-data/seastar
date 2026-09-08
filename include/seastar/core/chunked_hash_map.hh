@@ -22,7 +22,23 @@
 
 #include <seastar/core/chunked_vector.hh>
 
+// abseil LTS 20220623 and earlier include <ciso646> from
+// absl/base/options.h. libstdc++ 16 warns on that header for C++20 and later,
+// and seastar builds with -Werror.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-W#warnings"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcpp"
+#endif
 #include <absl/hash/hash.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 #include <ankerl/unordered_dense.h>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
