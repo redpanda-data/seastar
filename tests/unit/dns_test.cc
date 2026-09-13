@@ -21,6 +21,7 @@
  */
 #include <vector>
 #include <algorithm>
+#include <span>
 
 #include <seastar/core/seastar.hh>
 #include <seastar/core/sleep.hh>
@@ -54,7 +55,7 @@ static void write_be32(std::vector<char>& out, uint32_t v) {
     out.push_back(char(v));
 }
 
-static std::vector<char> make_tcp_dns_a_response(const temporary_buffer<char>& query) {
+static std::vector<char> make_dns_a_response(const temporary_buffer<char>& query) {
     BOOST_REQUIRE_GE(query.size(), 12);
     BOOST_REQUIRE_EQUAL(read_be16(query.get() + 4), 1);
 
@@ -87,10 +88,27 @@ static std::vector<char> make_tcp_dns_a_response(const temporary_buffer<char>& q
     msg.push_back(char(0));
     msg.push_back(char(42));
 
+    return msg;
+}
+
+static std::vector<char> make_tcp_dns_a_response(const temporary_buffer<char>& query) {
+    auto msg = make_dns_a_response(query);
     std::vector<char> tcp_response;
     write_be16(tcp_response, msg.size());
     tcp_response.insert(tcp_response.end(), msg.begin(), msg.end());
     return tcp_response;
+}
+
+// Answers exactly one query, over whatever family the channel is bound to.
+static future<> serve_udp_dns_response(net::datagram_channel& chan) {
+    auto dg = co_await chan.receive();
+    auto bufs = dg.get_buffers();
+    BOOST_REQUIRE(!bufs.empty());
+    // A DNS query for a single name fits one buffer.
+    auto query = temporary_buffer<char>(bufs.front().get(), bufs.front().size());
+    auto response = make_dns_a_response(query);
+    auto out = temporary_buffer<char>(response.data(), response.size());
+    co_await chan.send(dg.get_src(), std::span<temporary_buffer<char>>(&out, 1));
 }
 
 static future<> serve_split_tcp_dns_response(server_socket& listener) {
@@ -271,6 +289,51 @@ SEASTAR_TEST_CASE(test_resolve_tcp_split_response) {
             throw;
         }
     }
+    if (ex) {
+        std::rethrow_exception(ex);
+    }
+}
+
+// The resolver must be able to *talk to* an IPv6 nameserver. The record it
+// asks for is still an A record: nameserver transport family and answer
+// family are independent, and only the former was broken.
+SEASTAR_TEST_CASE(test_resolve_udp_ipv6_nameserver) {
+    if (!engine().net().supports_ipv6()) {
+        BOOST_TEST_MESSAGE("No ipv6 support, skipping test");
+        co_return;
+    }
+
+    auto chan = make_bound_datagram_channel(socket_address(ipv6_addr{"::1", 0}));
+    auto server = serve_udp_dns_response(chan);
+
+    dns_resolver::options opts;
+    opts.servers = std::vector<inet_address>({ inet_address("::1") });
+    opts.udp_port = chan.local_address().port();
+    opts.timeout = std::chrono::seconds(30);
+
+    auto d = ::make_lw_shared<dns_resolver>(engine().net(), opts);
+
+    std::exception_ptr ex;
+    try {
+        auto h = co_await with_timeout(timer<>::clock::now() + std::chrono::seconds(5),
+                d->get_host_by_name("v6ns.seastar.test", inet_address::family::INET));
+        BOOST_REQUIRE_EQUAL(h.addr_entries.size(), 1);
+        BOOST_REQUIRE_EQUAL(h.addr_entries.front().addr, inet_address("127.0.0.42"));
+    } catch (...) {
+        ex = std::current_exception();
+    }
+
+    co_await d->close();
+    chan.shutdown_input();
+    try {
+        co_await std::move(server);
+    } catch (...) {
+        if (!ex) {
+            ex = std::current_exception();
+        }
+    }
+    chan.close();
+
     if (ex) {
         std::rethrow_exception(ex);
     }
