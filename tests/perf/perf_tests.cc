@@ -270,6 +270,9 @@ void time_measurement_stop_iteration() {
 
 std::map<std::string, std::string> parameters;
 
+// Iteration rates measured for --suggest-rates, in the order the tests ran.
+std::vector<std::pair<std::string, double>> suggested_rates;
+
 std::string get_parameter(std::string name) {
     auto it = parameters.find(name);
     return it == parameters.end() ? "" : it->second;
@@ -305,6 +308,9 @@ struct config {
     unsigned random_seed = 0;
     double overhead_threshold = 0.1;  // warn if overhead exceeds this ratio (e.g., 0.1 = 10%)
     bool fail_on_high_overhead = false;  // fail the test run if overhead exceeds threshold
+    bool suggest_rates = false;  // report each test's measured iteration rate
+    // a test declares a rate that this build does not honor
+    bool ignored_declared_rates = false;
 };
 
 // absorbs a single metric across all runs and calculates summary statistics
@@ -352,6 +358,7 @@ struct float_stats {
 struct result {
     result(size_t run_count) :
         runtime{run_count},
+        walltime{run_count},
         allocs{run_count},
         tasks{run_count},
         inst{run_count},
@@ -365,6 +372,10 @@ struct result {
     unsigned runs = 0;
 
     float_stats<duration> runtime;
+    // Wall-clock length of a run, which for a test using start/stop_measuring_time
+    // is longer than runtime. Not reported as a column; it is what --duration
+    // limits, so it is what a declared iteration rate has to predict.
+    float_stats<duration> walltime;
 
     float_stats<> allocs;
     float_stats<> tasks;
@@ -705,7 +716,7 @@ struct stdout_printer : text_printer {
         : text_printer(columns, options) {}
 
     virtual void print_configuration(const config& c) override {
-        fmt::print("{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {} ({})\n\n",
+        fmt::print("{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {} ({})\n",
                 "single run iterations:", c.single_run_iterations,
                 "single run duration:", duration { double(c.single_run_duration.count()) },
                 "number of runs:", c.number_of_runs,
@@ -713,6 +724,11 @@ struct stdout_printer : text_printer {
                 "random seed:", c.random_seed,
                 "start/stop overhead:", duration { measure_time->start_stop_overhead() },
                 duration { measure_time->start_stop_overhead_external() });
+
+        if (c.ignored_declared_rates) {
+            fmt::print("{:<25} {}\n", "declared rates:", "ignored (not a release build)");
+        }
+        fmt::print("\n");
 
         print_header_row();
     }
@@ -791,25 +807,48 @@ static std::FILE* maybe_open(const sstring& filename) {
     return ret;
 }
 
+// How far the rate a test declares may be out before its runs are reported as
+// straying from the requested duration, as a factor either way.
+static constexpr double DECLARED_RATE_DRIFT_FACTOR = 2.;
+
 void performance_test::do_run(const config& conf)
 {
-    _max_single_run_iterations = conf.single_run_iterations;
-    if (!_max_single_run_iterations) {
-        _max_single_run_iterations = std::numeric_limits<uint64_t>::max();
+    // Non-zero when the iteration count of a run is known up front, either
+    // because specified with --iterations or because the test declared
+    // iters_per_sec and this build honors that, so it can be calculated
+    // directly.
+    uint64_t fixed_iterations = conf.single_run_iterations;
+    bool from_declared_rate = false;
+    if (SEASTAR_PERF_TESTS_HONOR_DECLARED_RATE && !fixed_iterations
+        && std::isfinite(_options.iters_per_sec)
+        && _options.iters_per_sec > 0 && conf.single_run_duration.count()) {
+        auto seconds = std::chrono::duration<double>(conf.single_run_duration).count();
+        fixed_iterations = std::max<uint64_t>(1, std::llround(_options.iters_per_sec * seconds));
+        from_declared_rate = true;
     }
+
+    _max_single_run_iterations = fixed_iterations ? fixed_iterations
+                                                 : std::numeric_limits<uint64_t>::max();
 
     signal_timer tmr([this] {
         _max_single_run_iterations.store(0, std::memory_order_relaxed);
     });
 
-    // dry run, estimate the number of iterations
+    // One run ahead of the measured ones: a dry run whose iteration count
+    // calibrates the measured runs, or, when the count is already fixed, a
+    // warm-up of the same length as those runs, keeping first-run effects (cold
+    // caches, the allocator growing its pools) out of the measured ones.
     if (conf.single_run_duration.count()) {
         // switch out of seastar thread
         yield().then([&] {
-            tmr.arm(conf.single_run_duration);
+            if (!fixed_iterations) {
+                tmr.arm(conf.single_run_duration);
+            }
             return do_single_run().finally([&] {
-                tmr.cancel();
-                _max_single_run_iterations = _single_run_iterations;
+                if (!fixed_iterations) {
+                    tmr.cancel();
+                    _max_single_run_iterations = _single_run_iterations;
+                }
             });
         }).get();
     }
@@ -821,7 +860,9 @@ void performance_test::do_run(const config& conf)
         // switch out of seastar thread
         yield().then([&] {
             _single_run_iterations = 0;
-            return do_single_run().then([&] (run_result rr) {
+            auto wall_start = clock_type::now();
+            return do_single_run().then([&, wall_start] (run_result rr) {
+                clock_type::duration wall = clock_type::now() - wall_start;
                 clock_type::duration dt = rr.duration;
                 double ns = std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
 
@@ -830,6 +871,7 @@ void performance_test::do_run(const config& conf)
                 };
 
                 add(r.runtime, ns);
+                add(r.walltime, std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count());
 
                 total_iterations += _single_run_iterations;
 
@@ -852,6 +894,30 @@ void performance_test::do_run(const config& conf)
 
     for (auto& rp : conf.printers) {
         rp->print_result(r);
+    }
+
+    // The rate at which the test iterates, on the wall clock because that is what
+    // --duration limits and so what a declared rate has to predict.
+    constexpr double ns_per_second = 1e9;
+    const double median_wall = r.walltime.stats().med;  // per iteration, in nanoseconds
+    const double measured_rate = median_wall > 0 ? ns_per_second / median_wall : 0;
+
+    if (conf.suggest_rates) {
+        suggested_rates.emplace_back(name(), measured_rate);
+    }
+
+    // A declared rate is measured on one machine and decays as the test changes,
+    // so it only ever approximates the duration of a run. Warn once it is stale
+    // enough that runs are nowhere near the requested duration.
+    if (from_declared_rate) {
+        double drift = measured_rate / _options.iters_per_sec;
+        if (drift > DECLARED_RATE_DRIFT_FACTOR || drift < 1. / DECLARED_RATE_DRIFT_FACTOR) {
+            fmt::print("WARNING: test '{}' declares {} iterations/s but achieved {:.3g}/s, "
+                       "so each run took {} rather than the requested {}\n",
+                       name(), _options.iters_per_sec, measured_rate,
+                       duration { fixed_iterations * median_wall },
+                       duration { double(conf.single_run_duration.count()) });
+        }
     }
 
     // Check if overhead exceeds threshold and warn/fail
@@ -890,6 +956,42 @@ void performance_test::register_test(std::unique_ptr<performance_test> test)
     all_tests().emplace_back(std::move(test));
 }
 
+// Format a rate as a C++ integer literal with digit separators, rounded to two
+// significant digits. A declared rate only has to predict the length of a run, so
+// carrying more digits than that into the source would be false precision.
+static std::string format_rate_literal(double rate) {
+    uint64_t value = 1;
+    if (rate > 1) {
+        double scale = std::pow(10., std::max(0., std::floor(std::log10(rate)) - 1));
+        value = static_cast<uint64_t>(std::llround(rate / scale) * scale);
+    }
+    auto digits = fmt::format("{}", value);
+    std::string literal;
+    for (size_t i = 0; i < digits.size(); i++) {
+        if (i && (digits.size() - i) % 3 == 0) {
+            literal += '\'';
+        }
+        literal += digits[i];
+    }
+    return literal;
+}
+
+static void print_suggested_rates() {
+    if (suggested_rates.empty()) {
+        return;
+    }
+    size_t width = 0;
+    for (auto& [name, rate] : suggested_rates) {
+        width = std::max(width, name.size());
+    }
+    fmt::print("\nmeasured iteration rates, to declare in the PERF_TEST macro so that a\n"
+               "run's iteration count no longer depends on the speed of the machine:\n\n");
+    for (auto& [name, rate] : suggested_rates) {
+        fmt::print("  {:<{}}  .iters_per_sec = {}\n", name, width, format_rate_literal(rate));
+    }
+    fmt::print("\n");
+}
+
 void run_all(const std::vector<std::string>& test_patterns, config& conf) {
     std::vector<std::regex> regexes;
     regexes.reserve(test_patterns.size());
@@ -905,12 +1007,16 @@ void run_all(const std::vector<std::string>& test_patterns, config& conf) {
     };
     size_t max_name_column_length = 0;
     size_t matched_count = 0;
+    bool any_declared_rate = false;
     for (auto& t : all_tests()) {
         if (match(t.get())) {
             max_name_column_length = std::max(max_name_column_length, t->name().size());
             ++matched_count;
+            any_declared_rate |= t->options().iters_per_sec > 0;
         }
     }
+    conf.ignored_declared_rates
+        = any_declared_rate && !SEASTAR_PERF_TESTS_HONOR_DECLARED_RATE;
     if (!regexes.empty() && matched_count == 0) {
         fmt::print(stderr, "WARNING: no tests matched the given pattern(s):");
         for (auto& pat : test_patterns) {
@@ -937,6 +1043,9 @@ void run_all(const std::vector<std::string>& test_patterns, config& conf) {
     auto total_duration = clock_type::now() - run_start;
     for (auto& rp : conf.printers) {
         rp->print_summary(total_duration);
+    }
+    if (conf.suggest_rates) {
+        print_suggested_rates();
     }
 }
 
@@ -970,6 +1079,7 @@ int main(int ac, char** av)
         ("overhead-threshold", bpo::value<double>()->default_value(0.1),
             "warn if overhead exceeds this ratio (default: 0.1 = 10%)")
         ("fail-on-high-overhead", "fail the test run if any test exceeds the overhead threshold")
+        ("suggest-rates", "report the iteration rate measured for each test, as the .iters_per_sec declaration to paste into its PERF_TEST macro")
         ("no-perf-counters", "disable hardware perf counters (inst/cycles)")
         ("parameter", bpo::value<std::vector<std::string>>(), "specify test-specific parameters")
         ;
@@ -989,6 +1099,7 @@ int main(int ac, char** av)
             conf.random_seed = app.configuration()["random-seed"].as<unsigned>();
             conf.overhead_threshold = app.configuration()["overhead-threshold"].as<double>();
             conf.fail_on_high_overhead = app.configuration().count("fail-on-high-overhead") > 0;
+            conf.suggest_rates = app.configuration().count("suggest-rates") > 0;
 
             std::vector<std::string> tests_to_run;
             if (app.configuration().count("test")) {

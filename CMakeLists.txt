@@ -406,6 +406,12 @@ set (Seastar_DEBUG_SHARED_PTR
   STRING
   "Enable shared_ptr debugging. Can be ON, OFF or DEFAULT (which enables it for Debug and Sanitize)")
 
+set (Seastar_PERF_TESTS_HONOR_DECLARED_RATE
+  "DEFAULT"
+  CACHE
+  STRING
+  "Honor an iteration rate declared by a perf test. Can be ON, OFF or DEFAULT (which enables it for release builds)")
+
 #
 # Useful (non-cache) variables.
 #
@@ -1364,6 +1370,16 @@ if (Seastar_INSTALL OR Seastar_TESTING)
   add_library (Seastar::seastar_perf_testing ALIAS seastar_perf_testing)
   target_compile_definitions (seastar_perf_testing
     PRIVATE ${Seastar_PRIVATE_COMPILE_DEFINITIONS})
+  # A declared iteration rate only holds for an optimized build, so by default
+  # only those honor one. configure.py's release mode maps to RelWithDebInfo.
+  tri_state_option (${Seastar_PERF_TESTS_HONOR_DECLARED_RATE}
+    DEFAULT_BUILD_TYPES "Release" "RelWithDebInfo"
+    CONDITION condition)
+  if (condition)
+    target_compile_definitions (seastar_perf_testing
+      PUBLIC
+        $<${condition}:SEASTAR_PERF_TESTS_HONOR_DECLARED_RATE=1>)
+  endif ()
   target_compile_options (seastar_perf_testing
     PRIVATE ${Seastar_PRIVATE_CXX_FLAGS})
   target_link_libraries (seastar_perf_testing
