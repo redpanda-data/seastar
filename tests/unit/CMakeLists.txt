@@ -851,6 +851,10 @@ seastar_add_test (gate
   SOURCES
     gate_test.cc)
 
+seastar_add_test (task_context
+  SOURCES
+    task_context_test.cc)
+
 seastar_add_test (test_fixture
   SOURCES
     test_fixture_test.cc)

@@ -120,6 +120,11 @@ add_tristate(
     help='Collect backtrace at deferring points')
 add_tristate(
     arg_parser,
+    name='task-context',
+    dest='task_context',
+    help='Enable task context propagation for tracing and request-scoped state')
+add_tristate(
+    arg_parser,
     name='unused-result-error',
     dest="unused_result_error",
     help='Make [[nodiscard]] violations an error')
@@ -207,6 +212,7 @@ def configure_mode(mode):
         tr(args.io_uring, 'IO_URING', value_when_none=None),
         tr(args.alloc_failure_injection, 'ALLOC_FAILURE_INJECTION', value_when_none='DEFAULT'),
         tr(args.task_backtrace, 'TASK_BACKTRACE'),
+        tr(args.task_context, 'TASK_CONTEXT'),
         tr(args.alloc_page_size, 'ALLOC_PAGE_SIZE'),
         tr(args.split_dwarf, 'SPLIT_DWARF'),
         tr(args.heap_profiling, 'HEAP_PROFILING'),

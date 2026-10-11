@@ -2746,6 +2746,9 @@ bool reactor::task_queue::run_tasks() {
         STAP_PROBE(seastar, reactor_run_tasks_single_start);
         internal::task_histogram_add_task(*tsk);
         r._current_task = tsk;
+#ifdef SEASTAR_TASK_CONTEXT
+        internal::current_task_context_ref() = tsk->context_ptr();
+#endif
         tsk->run_and_dispose();
         r._current_task = nullptr;
         STAP_PROBE(seastar, reactor_run_tasks_single_end);
@@ -2773,6 +2776,9 @@ bool reactor::task_queue::run_tasks() {
         }
     }
 
+#ifdef SEASTAR_TASK_CONTEXT
+    internal::current_task_context_ref() = nullptr;
+#endif
     return !_q.empty();
 }
 
@@ -5178,6 +5184,14 @@ internal::current_scheduling_group_ptr() noexcept {
     static thread_local scheduling_group sg;
     return &sg;
 }
+
+#ifdef SEASTAR_TASK_CONTEXT
+task_context*&
+internal::current_task_context_ref() noexcept {
+    static thread_local task_context* ptr = nullptr;
+    return ptr;
+}
+#endif
 #endif
 
 const sstring&
@@ -5471,6 +5485,9 @@ void log_timer_callback_exception(std::exception_ptr ex) noexcept {
 
 void set_current_task(task* t) {
     local_engine->_current_task = t;
+#ifdef SEASTAR_TASK_CONTEXT
+    internal::current_task_context_ref() = t ? t->context_ptr() : nullptr;
+#endif
 }
 
 }
