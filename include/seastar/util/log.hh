@@ -71,6 +71,14 @@ class logger {
 #endif
 
 public:
+    /// Tag used to request that a log call bypass the configured level
+    /// gate. Passed as the first argument to any force-suffixed overload
+    /// or to the per-level helpers. A distinct type (not bool) avoids
+    /// ambiguity with the format_info-first overloads: a string literal
+    /// converts to format_info but not to force_tag.
+    struct force_tag {};
+    static constexpr force_tag force{};
+
     class log_writer {
     public:
         virtual ~log_writer() = default;
@@ -251,20 +259,13 @@ public:
     ///
     template <typename... Args>
     void log(log_level level, format_info_t<Args...> fmt, Args&&... args) noexcept {
-        if (is_enabled(level)) {
-            try {
-                lambda_log_writer writer([&] (internal::log_buf::inserter_iterator it) {
-#ifdef SEASTAR_LOGGER_COMPILE_TIME_FMT
-                    return fmt::format_to(it, fmt.format, std::forward<Args>(args)...);
-#else
-                    return fmt::format_to(it, fmt::runtime(fmt.format), std::forward<Args>(args)...);
-#endif
-                });
-                do_log(level, writer);
-            } catch (...) {
-                failed_to_log(std::current_exception(), fmt::string_view(fmt.format), fmt.loc);
-            }
-        }
+        do_log_checked(level, false, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void log(log_level level, force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        do_log_checked(level, true, std::move(fmt), std::forward<Args>(args)...);
     }
 
     /// logs with a rate limit to desired level if enabled, otherwise we ignore the log line
@@ -283,19 +284,14 @@ public:
     ///
     template <typename... Args>
     void log(log_level level, rate_limit& rl, format_info_t<Args...> fmt, Args&&... args) noexcept {
-        if (is_enabled(level) && rl.check()) {
-            try {
-                lambda_log_writer writer([&] (internal::log_buf::inserter_iterator it) {
-                    if (rl.has_dropped_messages()) {
-                        it = fmt::format_to(it, "(rate limiting dropped {} similar messages) ", rl.get_and_reset_dropped_messages());
-                    }
-                    return fmt::format_to(it, fmt::runtime(fmt.format), std::forward<Args>(args)...);
-                });
-                do_log(level, writer);
-            } catch (...) {
-                failed_to_log(std::current_exception(), fmt::string_view(fmt.format), fmt.loc);
-            }
-        }
+        do_log_checked_rl(level, false, rl, std::move(fmt), std::forward<Args>(args)...);
+    }
+
+    /// Force-emit rate-limited variant: bypass the level gate (the rate
+    /// limit itself still applies).
+    template <typename... Args>
+    void log(log_level level, force_tag, rate_limit& rl, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        do_log_checked_rl(level, true, rl, std::move(fmt), std::forward<Args>(args)...);
     }
 
     /// \cond internal
@@ -355,6 +351,11 @@ public:
     void error(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::error, std::move(fmt), std::forward<Args>(args)...);
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void error(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::error, force, std::move(fmt), std::forward<Args>(args)...);
+    }
     /// Log with warning tag:
     /// WARN  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -366,6 +367,11 @@ public:
     void warn(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::warn, std::move(fmt), std::forward<Args>(args)...);
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void warn(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::warn, force, std::move(fmt), std::forward<Args>(args)...);
+    }
     /// Log with info tag:
     /// INFO  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -376,6 +382,11 @@ public:
     template <typename... Args>
     void info(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::info, std::move(fmt), std::forward<Args>(args)...);
+    }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void info(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::info, force, std::move(fmt), std::forward<Args>(args)...);
     }
     /// Log with info tag on shard zero only:
     /// INFO  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
@@ -390,6 +401,13 @@ public:
             log(log_level::info, std::move(fmt), std::forward<Args>(args)...);
         }
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void info0(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        if (is_shard_zero()) {
+            log(log_level::info, force, std::move(fmt), std::forward<Args>(args)...);
+        }
+    }
     /// Log with debug tag:
     /// DEBUG  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -401,6 +419,11 @@ public:
     void debug(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::debug, std::move(fmt), std::forward<Args>(args)...);
     }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void debug(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::debug, force, std::move(fmt), std::forward<Args>(args)...);
+    }
     /// Log with trace tag:
     /// TRACE  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
@@ -411,6 +434,11 @@ public:
     template <typename... Args>
     void trace(format_info_t<Args...> fmt, Args&&... args) noexcept {
         log(log_level::trace, std::move(fmt), std::forward<Args>(args)...);
+    }
+    /// Force-emit variant: bypass the level gate. See \ref force_tag.
+    template <typename... Args>
+    void trace(force_tag, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        log(log_level::trace, force, std::move(fmt), std::forward<Args>(args)...);
     }
 
     /// \return name of the logger. Usually one logger per module
@@ -457,6 +485,42 @@ public:
     ///
     /// \note this is a noop if fmtlib's version is less than 6.0
     static void set_with_color(bool enabled) noexcept;
+
+private:
+    template <typename... Args>
+    void do_log_checked(log_level level, bool bypass, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        if (bypass || is_enabled(level)) {
+            try {
+                lambda_log_writer writer([&] (internal::log_buf::inserter_iterator it) {
+#ifdef SEASTAR_LOGGER_COMPILE_TIME_FMT
+                    return fmt::format_to(it, fmt.format, std::forward<Args>(args)...);
+#else
+                    return fmt::format_to(it, fmt::runtime(fmt.format), std::forward<Args>(args)...);
+#endif
+                });
+                do_log(level, writer);
+            } catch (...) {
+                failed_to_log(std::current_exception(), fmt::string_view(fmt.format), fmt.loc);
+            }
+        }
+    }
+
+    template <typename... Args>
+    void do_log_checked_rl(log_level level, bool bypass, rate_limit& rl, format_info_t<Args...> fmt, Args&&... args) noexcept {
+        if ((bypass || is_enabled(level)) && rl.check()) {
+            try {
+                lambda_log_writer writer([&] (internal::log_buf::inserter_iterator it) {
+                    if (rl.has_dropped_messages()) {
+                        it = fmt::format_to(it, "(rate limiting dropped {} similar messages) ", rl.get_and_reset_dropped_messages());
+                    }
+                    return fmt::format_to(it, fmt::runtime(fmt.format), std::forward<Args>(args)...);
+                });
+                do_log(level, writer);
+            } catch (...) {
+                failed_to_log(std::current_exception(), fmt::string_view(fmt.format), fmt.loc);
+            }
+        }
+    }
 };
 
 /// \brief used to keep a static registry of loggers
