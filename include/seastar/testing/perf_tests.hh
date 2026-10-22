@@ -41,10 +41,44 @@ using seastar::future;
 using seastar::noncopyable_function;
 using seastar::is_future;
 
+// Whether a rate declared with perf_tests::test_options::iters_per_sec is
+// honored. Such a rate is measured on an optimized build, and a build with
+// sanitizers, debug checks or no inlining runs an order of magnitude slower, so
+// holding the iteration count fixed there would stretch every run by that
+// factor to produce numbers that are not comparable to an optimized build's
+// anyway. The build system therefore opts in: seastar's CMake build defines
+// this for the release build types and its Bazel build for optimized builds.
+// Everywhere else a declared rate is ignored and the count is calibrated by the
+// dry run as usual.
+#ifndef SEASTAR_PERF_TESTS_HONOR_DECLARED_RATE
+#define SEASTAR_PERF_TESTS_HONOR_DECLARED_RATE 0
+#endif
+
 namespace perf_tests {
 
 // The type of the pre-run hook. See PERF_PRE_RUN_HOOK.
 using pre_run_hook = noncopyable_function<void(const sstring& test_group, const sstring& test_case)>;
+
+// Optional declarations about a test, passed as a trailing argument to the
+// PERF_TEST macros with designated initializers:
+//
+//     PERF_TEST(my_group, my_case, .iters_per_sec = 10'000'000) { ... }
+//
+// Default initializing this struct results in the default options.
+struct test_options {
+    // The number of iterations the test completes in one second. When non-zero,
+    // the iteration count of a run is fixed at iters_per_sec * --duration rather
+    // than being calibrated by a timed dry run, so every run executes the same
+    // number of iterations no matter what machine it runs on, and the duration
+    // of a run becomes the approximate quantity instead. An explicit
+    // --iterations takes precedence over this value, which is in turn only
+    // honored in a build that sets SEASTAR_PERF_TESTS_HONOR_DECLARED_RATE.
+    //
+    // A double so that a rate can be written in scientific notation - .iters_per_sec
+    // = 1.2e6 as well as 1'200'000. A value that is not finite and positive is
+    // ignored, leaving the count to be calibrated.
+    double iters_per_sec = 0;
+};
 
 namespace internal {
 
@@ -127,6 +161,7 @@ inline perf_stats& perf_stats::operator-=(perf_stats b) {
 class performance_test {
     std::string _test_case;
     std::string _test_group;
+    test_options _options;
 
     uint64_t _single_run_iterations = 0;
     std::atomic<uint64_t> _max_single_run_iterations;
@@ -160,15 +195,18 @@ protected:
     void start_run();
     run_result stop_run();
 public:
-    performance_test(const std::string& test_case, const std::string& test_group)
+    performance_test(const std::string& test_case, const std::string& test_group,
+                     test_options options = {})
         : _test_case(test_case)
         , _test_group(test_group)
+        , _options(options)
     { }
 
     virtual ~performance_test() = default;
 
     const std::string& test_case() const { return _test_case; }
     const std::string& test_group() const { return _test_group; }
+    const test_options& options() const { return _options; }
     std::string name() const { return fmt::format("{}.{}", test_group(), test_case()); }
 
     void run(const config&);
@@ -236,8 +274,9 @@ public:
 
 template<typename Test>
 struct test_registrar {
-    test_registrar(const std::string& test_group, const std::string& test_case) {
-        auto test = std::make_unique<concrete_performance_test<Test>>(test_case, test_group);
+    test_registrar(const std::string& test_group, const std::string& test_case,
+                   test_options options = {}) {
+        auto test = std::make_unique<concrete_performance_test<Test>>(test_case, test_group, options);
         performance_test::register_test(std::move(test));
     }
 };
@@ -284,38 +323,48 @@ void do_not_optimize(const T& v)
 // the test function shall return either size_t or future<size_t> for synchronous and
 // asynchronous cases respectively. The returned value shall be the number of iterations
 // done in a single test run.
+//
+// All four macros accept an optional trailing argument declaring perf_tests::test_options
+// for the test, written with designated initializers:
+//
+//     PERF_TEST(my_group, my_case, .iters_per_sec = 10'000'000) { ... }
+//
 
-#define PERF_TEST_F(test_group, test_case) \
+#define PERF_TEST_F(test_group, test_case, ...) \
     struct test_##test_group##_##test_case : test_group { \
         [[gnu::always_inline]] inline auto run(); \
     }; \
     static ::perf_tests::internal::test_registrar<test_##test_group##_##test_case> \
-    test_##test_group##_##test_case##_registrar(#test_group, #test_case); \
+    test_##test_group##_##test_case##_registrar(#test_group, #test_case \
+        __VA_OPT__(, ::perf_tests::test_options{__VA_ARGS__})); \
     [[gnu::always_inline]] auto test_##test_group##_##test_case::run()
 
-#define PERF_TEST(test_group, test_case) \
+#define PERF_TEST(test_group, test_case, ...) \
     struct test_##test_group##_##test_case { \
         [[gnu::always_inline]] inline auto run(); \
     }; \
     static ::perf_tests::internal::test_registrar<test_##test_group##_##test_case> \
-    test_##test_group##_##test_case##_registrar(#test_group, #test_case); \
+    test_##test_group##_##test_case##_registrar(#test_group, #test_case \
+        __VA_OPT__(, ::perf_tests::test_options{__VA_ARGS__})); \
     [[gnu::always_inline]] auto test_##test_group##_##test_case::run()
 
 
-#define PERF_TEST_C(test_group, test_case) \
+#define PERF_TEST_C(test_group, test_case, ...) \
     struct test_##test_group##_##test_case : test_group { \
         inline future<> run(); \
     }; \
     static ::perf_tests::internal::test_registrar<test_##test_group##_##test_case> \
-    test_##test_group##_##test_case##_registrar(#test_group, #test_case); \
+    test_##test_group##_##test_case##_registrar(#test_group, #test_case \
+        __VA_OPT__(, ::perf_tests::test_options{__VA_ARGS__})); \
     future<> test_##test_group##_##test_case::run()
 
-#define PERF_TEST_CN(test_group, test_case) \
+#define PERF_TEST_CN(test_group, test_case, ...) \
     struct test_##test_group##_##test_case : test_group { \
         inline future<size_t> run(); \
     }; \
     static ::perf_tests::internal::test_registrar<test_##test_group##_##test_case> \
-    test_##test_group##_##test_case##_registrar(#test_group, #test_case); \
+    test_##test_group##_##test_case##_registrar(#test_group, #test_case \
+        __VA_OPT__(, ::perf_tests::test_options{__VA_ARGS__})); \
     future<size_t> test_##test_group##_##test_case::run()
 
 
