@@ -2913,14 +2913,14 @@ bool reactor::task_queue::run_tasks() {
 namespace {
 
 #ifdef SEASTAR_SHUFFLE_TASK_QUEUE
-void shuffle(task*& t, circular_buffer<task*>& q) {
+void shuffle(task*& t, std::deque<task*>& q) {
     static thread_local std::mt19937 gen{std::random_device{}()};
     std::uniform_int_distribution<size_t> tasks_dist{0, q.size() - 1};
     auto& to_swap = q[tasks_dist(gen)];
     std::swap(to_swap, t);
 }
 #else
-void shuffle(task*&, circular_buffer<task*>&) {
+void shuffle(task*&, std::deque<task*>&) {
 }
 #endif
 

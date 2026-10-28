@@ -64,6 +64,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string_view>
 #include <unordered_map>
@@ -304,7 +305,7 @@ private:
         explicit task_queue(task_queue_group* p, unsigned id, sstring name, sstring shortname, float shares);
         const uint8_t _id;
         uint64_t _tasks_processed = 0;
-        circular_buffer<task*> _q;
+        std::deque<task*> _q;
         sstring _name;
         // the shortened version of scheduling_gruop's name, only the first 4
         // chars are used.
