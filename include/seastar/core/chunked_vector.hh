@@ -103,8 +103,14 @@ public:
     explicit chunked_vector(allocator_type alloc)
       : _frags(alloc) {}
     chunked_vector& operator=(const chunked_vector&) noexcept = delete;
-    chunked_vector(chunked_vector&& other) noexcept {
-        *this = std::move(other);
+    /**
+     * @brief Move-construct, leaving @p other empty().
+     */
+    chunked_vector(chunked_vector&& other) noexcept
+      : _size(std::exchange(other._size, 0))
+      , _capacity(std::exchange(other._capacity, 0))
+      , _frags(std::move(other._frags)) {
+        other.update_generation();
     }
 
     /**
@@ -163,17 +169,12 @@ public:
   }
 #endif
 
+    /**
+     * @brief Move-assign, destroying the current contents and leaving
+     * @p other empty().
+     */
     chunked_vector& operator=(chunked_vector&& other) noexcept {
-        if (this != &other) {
-            this->_size = other._size;
-            this->_capacity = other._capacity;
-            this->_frags = std::move(other._frags);
-            // Move compatibility with std::vector that post move
-            // the vector is empty().
-            other._size = other._capacity = 0;
-            other.update_generation();
-            update_generation();
-        }
+        chunked_vector(std::move(other)).swap(*this);
         return *this;
     }
     ~chunked_vector() noexcept = default;

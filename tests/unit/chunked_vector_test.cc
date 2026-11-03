@@ -366,6 +366,54 @@ BOOST_AUTO_TEST_CASE(EmptyAfterMove) {
     BOOST_REQUIRE(v2.begin() == v2.end());
 }
 
+namespace {
+// Counts its own destructor calls, including those of moved-from instances,
+// in *dtors.
+struct dtor_counted {
+    dtor_counted(int x, int* dtors) noexcept : x(x), dtors(dtors) {}
+    dtor_counted(dtor_counted&&) noexcept = default;
+    dtor_counted& operator=(dtor_counted&&) noexcept = default;
+    ~dtor_counted() { ++*dtors; }
+    int x;
+    int* dtors;
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(MoveAssignNonEmpty) {
+    int old_dtors = 0;
+    int new_dtors = 0;
+    chunked_vector<dtor_counted> dst;
+    for (int i = 0; i < 5; ++i) {
+        dst.emplace_back(i, &old_dtors);
+    }
+    chunked_vector<dtor_counted> src;
+    for (int i = 0; i < 3; ++i) {
+        src.emplace_back(100 + i, &new_dtors);
+    }
+    // Growing the first fragment above destroyed moved-from elements.
+    old_dtors = new_dtors = 0;
+
+    dst = std::move(src);
+
+    // The old contents are destroyed exactly once and the moved elements are
+    // not touched.
+    BOOST_REQUIRE_EQUAL(old_dtors, 5);
+    BOOST_REQUIRE_EQUAL(new_dtors, 0);
+    ASSERT_VALID(dst);
+    BOOST_REQUIRE_EQUAL(dst.size(), 3u);
+    for (int i = 0; i < 3; ++i) {
+        BOOST_REQUIRE_EQUAL(dst[i].x, 100 + i);
+    }
+
+    // The source is empty and still usable.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    BOOST_REQUIRE(src.empty());
+    ASSERT_VALID(src);
+    src.emplace_back(7, &new_dtors);
+    BOOST_REQUIRE_EQUAL(src.size(), 1u);
+    BOOST_REQUIRE_EQUAL(src[0].x, 7);
+}
+
 BOOST_AUTO_TEST_CASE(Sort) {
     vec v;
     v.push_back(3);
