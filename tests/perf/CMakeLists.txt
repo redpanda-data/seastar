@@ -93,6 +93,9 @@ seastar_add_test (allocator
 seastar_add_test (container
   SOURCES container_perf.cc)
 
+seastar_add_test (chunked_vector
+  SOURCES chunked_vector_perf.cc)
+
 seastar_add_test (http_client
   SOURCES http_client_perf.cc linux_perf_event.cc
   NO_SEASTAR_PERF_TESTING_LIBRARY)
