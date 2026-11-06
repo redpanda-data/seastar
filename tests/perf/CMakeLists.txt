@@ -87,6 +87,12 @@ seastar_add_test (thread_context_switch
 seastar_add_test (coroutine
   SOURCES coroutine_perf.cc)
 
+seastar_add_test (task_dispatch
+  SOURCES task_dispatch_perf.cc)
+
+seastar_add_test (task_dispatch_random
+  SOURCES task_dispatch_random_perf.cc)
+
 seastar_add_test (allocator
   SOURCES allocator_perf.cc)
 
