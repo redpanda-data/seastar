@@ -105,7 +105,7 @@ inline std::coroutine_handle<> schedule_or_resume(std::coroutine_handle<> target
 namespace unbuffered {
 
 template <typename Yielded>
-class generator_promise_base : public seastar::task {
+class generator_promise_base : public seastar::coroutine_task {
     using yielded_deref_type = std::remove_reference_t<Yielded>;
     using yielded_decvref_type = std::remove_cvref_t<Yielded>;
     using value_ptr_type = std::add_pointer_t<Yielded>;
@@ -147,12 +147,12 @@ protected:
     struct copy_awaiter;
 
 public:
-    generator_promise_base() noexcept = default;
+    generator_promise_base() noexcept : coroutine_task(*this) {}
     generator_promise_base(const generator_promise_base &) = delete;
     generator_promise_base& operator=(const generator_promise_base &) = delete;
     generator_promise_base(generator_promise_base &&) noexcept = default;
     generator_promise_base& operator=(generator_promise_base &&) noexcept = default;
-    virtual ~generator_promise_base() = default;
+    ~generator_promise_base() = default;
 
     // lazily-started coroutine, do not execute the coroutine until
     // the coroutine is awaited.
@@ -198,12 +198,7 @@ public:
         }
     }
 
-    void run_and_dispose() noexcept final {
-        using handle_type = std::coroutine_handle<generator_promise_base>;
-        handle_type::from_promise(*this).resume();
-    }
-
-    seastar::task* waiting_task() noexcept final {
+    seastar::task* waiting_task() noexcept {
         return _waiting_task;
     }
 
@@ -528,7 +523,7 @@ concept bounded_container = requires(T container, typename T::value_type element
 };
 
 template <bounded_container Container>
-class generator_promise_base : public seastar::task {
+class generator_promise_base : public seastar::coroutine_task {
     using element_type = typename Container::value_type;
 
 protected:
@@ -544,12 +539,12 @@ protected:
     struct yield_awaiter;
 
 public:
-    generator_promise_base() noexcept = default;
+    generator_promise_base() noexcept : coroutine_task(*this) {}
     generator_promise_base(const generator_promise_base &) = delete;
     generator_promise_base& operator=(const generator_promise_base &) = delete;
     generator_promise_base(generator_promise_base &&) noexcept = default;
     generator_promise_base& operator=(generator_promise_base &&) noexcept = default;
-    virtual ~generator_promise_base() = default;
+    ~generator_promise_base() = default;
 
     // lazily-started coroutine, do not execute the coroutine until
     // the coroutine is awaited.
@@ -625,12 +620,7 @@ public:
         }
     }
 
-    void run_and_dispose() noexcept final {
-        using handle_type = std::coroutine_handle<generator_promise_base>;
-        handle_type::from_promise(*this).resume();
-    }
-
-    seastar::task* waiting_task() noexcept final {
+    seastar::task* waiting_task() noexcept {
         return _waiting_task;
     }
 

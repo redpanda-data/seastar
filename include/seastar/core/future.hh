@@ -771,7 +771,7 @@ struct future_state :  public future_state_base, private internal::uninitialized
 };
 
 template <typename T = void>
-class continuation_base : public task {
+class continuation_base : public runnable_task {
 protected:
     using future_state = seastar::future_state<internal::future_stored_type_t<T>>;
     future_state _state;
@@ -779,14 +779,21 @@ protected:
     using promise_type = promise<T>;
 public:
     continuation_base() noexcept = default;
+    ~continuation_base() {
+        // Every task derived from this class takes the exception out of a
+        // failed _state before it is destroyed, so destroying _state never
+        // reports an ignored exceptional future. Saying so lets the compiler
+        // drop that check, which would otherwise run, with this task as the
+        // current task, after the derived members are gone.
+        SEASTAR_DEBUG_ASSERT(!_state.failed());
+        if (_state.failed()) {
+            __builtin_unreachable();
+        }
+    }
     void set_state(future_state&& state) noexcept {
         _state = std::move(state);
     }
-    // This override of waiting_task() is needed here because there are cases
-    // when backtrace is obtained from the destructor of this class and objects
-    // of derived classes are already destroyed at that time. If we didn't
-    // have this override we would get a "pure virtual function call" exception.
-    virtual task* waiting_task() noexcept override { return nullptr; }
+    task* waiting_task() noexcept { return nullptr; }
     friend class internal::promise_base_with_type<T>;
     friend class promise<T>;
     friend class future<T>;
@@ -807,11 +814,12 @@ using continuation_base_from_future_t = typename continuation_base_from_future<F
 template <typename Promise, typename T = void>
 class continuation_base_with_promise : public continuation_base<T> {
     friend class internal::promise_base_with_type<T>;
+    friend class task;
 protected:
     continuation_base_with_promise(Promise&& pr) noexcept : _pr(std::move(pr)) {
         task::make_backtrace();
     }
-    virtual task* waiting_task() noexcept override;
+    task* waiting_task() noexcept;
     Promise _pr;
 };
 
@@ -830,8 +838,10 @@ struct continuation final : continuation_base_with_promise<Promise, T> {
     continuation(Promise&& pr, Func&& func, Wrapper&& wrapper) noexcept
         : continuation_base_with_promise<Promise, T>(std::move(pr))
         , _func(std::move(func))
-        , _wrapper(std::move(wrapper)) {}
-    virtual void run_and_dispose() noexcept override {
+        , _wrapper(std::move(wrapper)) {
+        this->template set_task_type<continuation>();
+    }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         try {
             _wrapper(std::move(this->_pr), std::move(_func), std::move(this->_state));
         } catch (...) {

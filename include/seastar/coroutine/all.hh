@@ -121,8 +121,10 @@ class [[nodiscard("must co_await an all() object")]] all {
     template <size_t idx>
     struct intermediate_task final : continuation_base_from_future_t<std::tuple_element_t<idx, tuple>> {
         awaiter& container;
-        explicit intermediate_task(awaiter& container) : container(container) {}
-        virtual void run_and_dispose() noexcept {
+        explicit intermediate_task(awaiter& container) : container(container) {
+            this->template set_task_type<intermediate_task>();
+        }
+        [[gnu::always_inline]] void run_and_dispose() noexcept {
             using value_type = typename std::tuple_element_t<idx, tuple>::value_type;
             if (__builtin_expect(this->_state.failed(), false)) {
                 using futurator = futurize<std::tuple_element_t<idx, tuple>>;

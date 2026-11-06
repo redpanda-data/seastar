@@ -119,6 +119,7 @@ public:
     explicit parallel_for_each(Iterator begin, Sentinel end, Func1&& func) noexcept
         : _func(std::forward<Func1>(func))
     {
+        this->template set_task_type<parallel_for_each>();
         for (auto it = begin; it != end; ++it) {
             auto fut = futurize_invoke(_func, *it);
             if (fut.available()) {
@@ -165,14 +166,15 @@ public:
         }
     }
 
-    virtual void run_and_dispose() noexcept override {
+    friend class seastar::task;
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         if (this->_state.failed()) {
             _ex = std::move(this->_state).get_exception();
         }
         resume_or_set_callback();
     }
 
-    virtual task* waiting_task() noexcept override {
+    task* waiting_task() noexcept {
         return _waiting_task;
     }
 };

@@ -466,19 +466,21 @@ struct sched {
     seastar::scheduling_group g1;
     seastar::scheduling_group g2;
 
-    class dummy final : public seastar::task {
+    class dummy final : public seastar::runnable_task {
         seastar::task* peer = nullptr;
     public:
-        dummy(scheduling_group sg, seastar::task* p) noexcept : task(sg), peer(p) {}
+        dummy(scheduling_group sg, seastar::task* p) noexcept : runnable_task(sg), peer(p) {
+            set_task_type<dummy>();
+        }
 
-        virtual void run_and_dispose() noexcept override {
+        [[gnu::always_inline]] void run_and_dispose() noexcept {
             seastar::schedule(peer);
         }
 
-        task* waiting_task() noexcept override { return nullptr; }
+        task* waiting_task() noexcept { return nullptr; }
     };
 
-    class switcher final : public seastar::task {
+    class switcher final : public seastar::runnable_task {
         std::unique_ptr<dummy> bounce;
         unsigned iterations = 0;
 
@@ -486,12 +488,14 @@ struct sched {
         promise<> done;
 
         switcher(scheduling_group sg1, scheduling_group sg2, unsigned it) noexcept
-            : task(sg1)
+            : runnable_task(sg1)
             , bounce(std::make_unique<dummy>(sg2, this))
             , iterations(it)
-        {}
+        {
+            set_task_type<switcher>();
+        }
 
-        virtual void run_and_dispose() noexcept override {
+        [[gnu::always_inline]] void run_and_dispose() noexcept {
             if (--iterations > 0) {
                 seastar::schedule(bounce.get());
                 return;
@@ -501,25 +505,29 @@ struct sched {
             delete this;
         }
 
-        task* waiting_task() noexcept override { return nullptr; }
+        task* waiting_task() noexcept { return nullptr; }
     };
 
-    class noop_task final : public seastar::task {
+    class noop_task final : public seastar::runnable_task {
     public:
-        noop_task(scheduling_group sg) noexcept : task(sg) {}
-        virtual void run_and_dispose() noexcept override { }
-        virtual task* waiting_task() noexcept override { return nullptr; }
+        noop_task(scheduling_group sg) noexcept : runnable_task(sg) {
+            set_task_type<noop_task>();
+        }
+        [[gnu::always_inline]] void run_and_dispose() noexcept { }
+        task* waiting_task() noexcept { return nullptr; }
     };
 
-    class completion_task final : public seastar::task {
+    class completion_task final : public seastar::runnable_task {
         std::optional<promise<>> _done;
     public:
-        completion_task(scheduling_group sg) noexcept : task(sg) {}
-        virtual void run_and_dispose() noexcept override {
+        completion_task(scheduling_group sg) noexcept : runnable_task(sg) {
+            set_task_type<completion_task>();
+        }
+        [[gnu::always_inline]] void run_and_dispose() noexcept {
             _done->set_value();
             _done.reset();
         }
-        virtual task* waiting_task() noexcept override { return nullptr; }
+        task* waiting_task() noexcept { return nullptr; }
 
         void activate() {
             _done.emplace();

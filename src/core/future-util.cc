@@ -27,6 +27,7 @@
 namespace seastar {
 
 parallel_for_each_state::parallel_for_each_state(size_t n) {
+    set_task_type<parallel_for_each_state>();
     _incomplete.reserve(n);
 }
 

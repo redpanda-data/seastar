@@ -29,19 +29,23 @@ namespace seastar {
 
 template <typename Func>
 requires std::invocable<Func>
-class lambda_task final : public task {
+class lambda_task final : public runnable_task {
     Func _func;
     using futurator = futurize<std::invoke_result_t<Func>>;
     typename futurator::promise_type _result;
 public:
-    lambda_task(scheduling_group sg, const Func& func) : task(sg), _func(func) {}
-    lambda_task(scheduling_group sg, Func&& func) : task(sg), _func(std::move(func)) {}
+    lambda_task(scheduling_group sg, const Func& func) : runnable_task(sg), _func(func) {
+        set_task_type<lambda_task>();
+    }
+    lambda_task(scheduling_group sg, Func&& func) : runnable_task(sg), _func(std::move(func)) {
+        set_task_type<lambda_task>();
+    }
     typename futurator::type get_future() noexcept { return _result.get_future(); }
-    virtual void run_and_dispose() noexcept override {
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         futurator::invoke(_func).forward_to(std::move(_result));
         delete this;
     }
-    virtual task* waiting_task() noexcept override {
+    task* waiting_task() noexcept {
         return _result.waiting_task();
     }
 };

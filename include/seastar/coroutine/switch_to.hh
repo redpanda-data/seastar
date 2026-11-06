@@ -52,7 +52,7 @@ namespace seastar::coroutine {
 /// }
 /// ```
 
-struct [[nodiscard("must co_await a switch_to object")]] switch_to final : task {
+struct [[nodiscard("must co_await a switch_to object")]] switch_to final : runnable_task {
     scheduling_group _prev_sg;
     scheduling_group _switch_to_sg;
     task* _task = nullptr;
@@ -60,7 +60,9 @@ public:
     explicit switch_to(scheduling_group new_sg) noexcept
         : _prev_sg(current_scheduling_group())
         , _switch_to_sg(std::move(new_sg))
-    { }
+    {
+        set_task_type<switch_to>();
+    }
 
     switch_to(const switch_to&) = delete;
     switch_to(switch_to&&) = delete;
@@ -82,9 +84,9 @@ public:
         return _prev_sg;
     }
 
-    virtual void run_and_dispose() noexcept override { }
+    [[gnu::always_inline]] void run_and_dispose() noexcept { }
 
-    virtual task* waiting_task() noexcept override {
+    task* waiting_task() noexcept {
         return _task;
     }
 };

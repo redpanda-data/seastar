@@ -51,6 +51,7 @@
 #include <seastar/util/assert.hh>
 #include <seastar/util/log.hh>
 #include <seastar/util/later.hh>
+#include <seastar/core/coroutine.hh>
 #include <boost/iterator/counting_iterator.hpp>
 #include <seastar/testing/thread_test_case.hh>
 
@@ -3029,4 +3030,22 @@ void compile_tests() {
     static_assert(function_traits<decltype(many_args)>::arity == 8);
     static_assert(std::is_same_v<function_traits<decltype(many_args)>::arg<3>::type, char>);
     static_assert(std::is_same_v<function_traits<decltype(many_args)>::arg<7>::type, std::string>);
+}
+
+SEASTAR_TEST_CASE(test_task_type_info) {
+    // A then() continuation reports its own type.
+    promise<> p;
+    auto f = p.get_future().then([] {});
+    task* t = p.waiting_task();
+    BOOST_REQUIRE(t);
+    BOOST_REQUIRE(std::string_view(t->task_info().type->name()).contains("continuation"));
+    p.set_value();
+    co_await std::move(f);
+
+    // A coroutine resumed by the reactor is the current task, and reports
+    // its promise type.
+    co_await yield();
+    task* self = engine().current_task();
+    BOOST_REQUIRE(self);
+    BOOST_REQUIRE(std::string_view(self->task_info().type->name()).contains("promise_type"));
 }

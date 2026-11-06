@@ -120,9 +120,11 @@ public:
             return false;
         }
     }
-    when_all_state_component(when_all_state_base *base, Future* future) noexcept : _base(base), _final_resting_place(future) {}
-    task* waiting_task() noexcept override { return _base->waiting_task(); }
-    virtual void run_and_dispose() noexcept override {
+    when_all_state_component(when_all_state_base *base, Future* future) noexcept : _base(base), _final_resting_place(future) {
+        this->template set_task_type<when_all_state_component>();
+    }
+    task* waiting_task() noexcept { return _base->waiting_task(); }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         using futurator = futurize<Future>;
         if (__builtin_expect(this->_state.failed(), false)) {
             *_final_resting_place = futurator::make_exception_future(std::move(this->_state).get_exception());

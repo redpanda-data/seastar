@@ -86,7 +86,7 @@ extern thread_local jmp_buf_link g_unthreaded_context;
 // Internal class holding thread state.  We can't hold this in
 // \c thread itself because \c thread is movable, and we want pointers
 // to this state to be captured.
-class thread_context final : private task {
+class thread_context final : private runnable_task {
     struct stack_deleter {
         void operator()(char *ptr) const noexcept;
         int valgrind_id;
@@ -112,7 +112,8 @@ private:
     void setup(size_t stack_size);
     void main();
     stack_holder make_stack(size_t stack_size);
-    virtual void run_and_dispose() noexcept override; // from task class
+    [[gnu::always_inline]] void run_and_dispose() noexcept;
+    friend class task;
 public:
     thread_context(thread_attributes attr, noncopyable_function<void ()> func);
     ~thread_context();
@@ -121,7 +122,7 @@ public:
     bool should_yield() const;
     void reschedule();
     void yield();
-    task* waiting_task() noexcept override { return _done.waiting_task(); }
+    task* waiting_task() noexcept { return _done.waiting_task(); }
     friend class thread;
     friend void thread_impl::switch_in(thread_context*);
     friend void thread_impl::switch_out(thread_context*);

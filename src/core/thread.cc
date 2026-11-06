@@ -211,9 +211,10 @@ static size_t get_stack_size(thread_attributes attr) {
 }
 
 thread_context::thread_context(thread_attributes attr, noncopyable_function<void ()> func)
-        : task(attr.sched_group.value_or(current_scheduling_group()))
+        : runnable_task(attr.sched_group.value_or(current_scheduling_group()))
         , _stack(make_stack(get_stack_size(attr)))
         , _func(std::move(func)) {
+    set_task_type<thread_context>();
     setup(get_stack_size(attr));
     _all_threads.push_front(*this);
 }

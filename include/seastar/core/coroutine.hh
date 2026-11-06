@@ -88,10 +88,10 @@ public:
 template <typename T = void>
 class coroutine_traits_base {
 public:
-    class promise_type final : public seastar::task, public coroutine_allocators {
+    class promise_type final : public seastar::coroutine_task, public coroutine_allocators {
         seastar::promise<T> _promise;
     public:
-        promise_type() = default;
+        promise_type() noexcept : coroutine_task(*this) {}
         promise_type(promise_type&&) = delete;
         promise_type(const promise_type&) = delete;
 
@@ -137,12 +137,7 @@ public:
         std::suspend_never initial_suspend() noexcept { return { }; }
         std::suspend_never final_suspend() noexcept { return { }; }
 
-        virtual void run_and_dispose() noexcept override {
-            auto handle = std::coroutine_handle<promise_type>::from_promise(*this);
-            handle.resume();
-        }
-
-        task* waiting_task() noexcept override { return _promise.waiting_task(); }
+        task* waiting_task() noexcept { return _promise.waiting_task(); }
 
         scheduling_group set_scheduling_group(scheduling_group sg) noexcept {
             return std::exchange(this->_sg, sg);
@@ -153,10 +148,10 @@ public:
 template <>
 class coroutine_traits_base<> {
 public:
-   class promise_type final : public seastar::task, public coroutine_allocators {
+   class promise_type final : public seastar::coroutine_task, public coroutine_allocators {
         seastar::promise<> _promise;
     public:
-        promise_type() = default;
+        promise_type() noexcept : coroutine_task(*this) {}
         promise_type(promise_type&&) = delete;
         promise_type(const promise_type&) = delete;
 
@@ -179,12 +174,7 @@ public:
         std::suspend_never initial_suspend() noexcept { return { }; }
         std::suspend_never final_suspend() noexcept { return { }; }
 
-        virtual void run_and_dispose() noexcept override {
-            auto handle = std::coroutine_handle<promise_type>::from_promise(*this);
-            handle.resume();
-        }
-
-        task* waiting_task() noexcept override { return _promise.waiting_task(); }
+        task* waiting_task() noexcept { return _promise.waiting_task(); }
 
         scheduling_group set_scheduling_group(scheduling_group new_sg) noexcept {
             return task::set_scheduling_group(new_sg);

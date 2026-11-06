@@ -43,14 +43,16 @@ void try_future_resume_or_destroy_coroutine(seastar::future<T>& fut, seastar::ta
 // This makes calls to the factories below safe elide contexts, so their
 // annotated arguments can propagate HALO to the wrapped coroutine.
 template <bool CheckPreempt, typename T>
-class [[nodiscard]] SEASTAR_CORO_AWAIT_ELIDABLE try_future_awaiter : public seastar::task {
+class [[nodiscard]] SEASTAR_CORO_AWAIT_ELIDABLE try_future_awaiter final : public seastar::runnable_task {
     seastar::future<T> _future;
     void (*_resume_or_destroy)(seastar::future<T>&, seastar::task&){};
     seastar::task* _coroutine_task{};
     seastar::task* _waiting_task{};
 
 public:
-    explicit try_future_awaiter(seastar::future<T>&& f) noexcept : _future(std::move(f)) {}
+    explicit try_future_awaiter(seastar::future<T>&& f) noexcept : _future(std::move(f)) {
+        this->template set_task_type<try_future_awaiter>();
+    }
 
     try_future_awaiter(const try_future_awaiter&) = delete;
     try_future_awaiter(try_future_awaiter&&) = delete;
@@ -81,11 +83,11 @@ public:
         }
     }
 
-    virtual void run_and_dispose() noexcept final override {
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         _resume_or_destroy(_future, *_coroutine_task);
     }
 
-    virtual task* waiting_task() noexcept override {
+    task* waiting_task() noexcept {
         return _waiting_task;
     }
 };

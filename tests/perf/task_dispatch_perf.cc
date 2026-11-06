@@ -75,12 +75,13 @@ future<> then_loop() {
 // A task type written directly against the task interface, which reschedules
 // itself: one dispatch per step.
 template <int I>
-class requeue_task final : public task {
+class requeue_task final : public runnable_task {
     size_t _left = steps;
     promise<> _done;
 public:
+    requeue_task() noexcept { set_task_type<requeue_task>(); }
     future<> done() { return _done.get_future(); }
-    void run_and_dispose() noexcept override {
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         perf_tests::do_not_optimize(I);
         if (--_left) {
             schedule(this);
@@ -89,7 +90,7 @@ public:
             delete this;
         }
     }
-    task* waiting_task() noexcept override { return nullptr; }
+    task* waiting_task() noexcept { return nullptr; }
 };
 
 template <int I>

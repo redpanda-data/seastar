@@ -208,8 +208,8 @@ class smp_message_queue {
         size_t _received = 0;
         size_t _last_rcv_batch = 0;
     };
-    struct work_item : public task {
-        explicit work_item(smp_service_group ssg) : task(current_scheduling_group()), ssg(ssg) {}
+    struct work_item : public runnable_task {
+        explicit work_item(smp_service_group ssg) : runnable_task(current_scheduling_group()), ssg(ssg) {}
         smp_service_group ssg;
         virtual ~work_item() {}
         virtual void fail_with(std::exception_ptr) = 0;
@@ -217,7 +217,7 @@ class smp_message_queue {
         virtual void complete() = 0;
     };
     template <typename Func>
-    struct async_work_item : work_item {
+    struct async_work_item final : work_item {
         smp_message_queue& _queue;
         Func _func;
         using futurator = futurize<std::invoke_result_t<Func>>;
@@ -226,15 +226,17 @@ class smp_message_queue {
         std::optional<value_type> _result;
         std::exception_ptr _ex; // if !_result
         typename futurator::promise_type _promise; // used on local side
-        async_work_item(smp_message_queue& queue, smp_service_group ssg, Func&& func) : work_item(ssg), _queue(queue), _func(std::move(func)) {}
+        async_work_item(smp_message_queue& queue, smp_service_group ssg, Func&& func) : work_item(ssg), _queue(queue), _func(std::move(func)) {
+            this->template set_task_type<async_work_item>();
+        }
         virtual void fail_with(std::exception_ptr ex) override {
             _promise.set_exception(std::move(ex));
         }
-        virtual task* waiting_task() noexcept override {
+        task* waiting_task() noexcept {
             // FIXME: waiting_tasking across shards is not implemented. Unsynchronized task access is unsafe.
             return nullptr;
         }
-        virtual void run_and_dispose() noexcept override {
+        [[gnu::always_inline]] void run_and_dispose() noexcept {
             // _queue.respond() below forwards the continuation chain back to the
             // calling shard.
             (void)futurator::invoke(this->_func).then_wrapped([this] (auto f) {

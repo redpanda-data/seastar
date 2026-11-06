@@ -611,7 +611,7 @@ class task_histogram {
     unsigned _countdown_to_print = max_countdown;
 public:
     void add(const task& t) {
-        ++_histogram[std::type_index(typeid(t))];
+        ++_histogram[std::type_index(*t.task_info().type)];
         if (!--_countdown_to_print) {
             print();
             _countdown_to_print = max_countdown;
@@ -3693,19 +3693,21 @@ reactor::pure_poll_once() {
 
 namespace internal {
 
-class poller::registration_task final : public task {
+class poller::registration_task final : public runnable_task {
 private:
     poller* _p;
 public:
-    explicit registration_task(poller* p) : _p(p) {}
-    virtual void run_and_dispose() noexcept override {
+    explicit registration_task(poller* p) : _p(p) {
+        set_task_type<registration_task>();
+    }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         if (_p) {
             engine().register_poller(_p->_pollfn.get());
             _p->_registration_task = nullptr;
         }
         delete this;
     }
-    task* waiting_task() noexcept override { return nullptr; }
+    task* waiting_task() noexcept { return nullptr; }
     void cancel() {
         _p = nullptr;
     }
@@ -3714,16 +3716,18 @@ public:
     }
 };
 
-class poller::deregistration_task final : public task {
+class poller::deregistration_task final : public runnable_task {
 private:
     std::unique_ptr<pollfn> _p;
 public:
-    explicit deregistration_task(std::unique_ptr<pollfn>&& p) : _p(std::move(p)) {}
-    virtual void run_and_dispose() noexcept override {
+    explicit deregistration_task(std::unique_ptr<pollfn>&& p) : _p(std::move(p)) {
+        set_task_type<deregistration_task>();
+    }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         engine().unregister_poller(_p.get());
         delete this;
     }
-    task* waiting_task() noexcept override { return nullptr; }
+    task* waiting_task() noexcept { return nullptr; }
 };
 
 }

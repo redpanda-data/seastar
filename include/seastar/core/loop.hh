@@ -56,10 +56,12 @@ class repeater final : public continuation_base<stop_iteration> {
     promise<> _promise;
     AsyncAction _action;
 public:
-    explicit repeater(AsyncAction&& action) : _action(std::move(action)) {}
+    explicit repeater(AsyncAction&& action) : _action(std::move(action)) {
+        this->template set_task_type<repeater>();
+    }
     future<> get_future() { return _promise.get_future(); }
-    task* waiting_task() noexcept override { return _promise.waiting_task(); }
-    virtual void run_and_dispose() noexcept override {
+    task* waiting_task() noexcept { return _promise.waiting_task(); }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         if (_state.failed()) {
             _promise.set_exception(std::move(_state).get_exception());
             delete this;
@@ -174,13 +176,15 @@ class repeat_until_value_state final : public continuation_base<std::optional<T>
     promise<T> _promise;
     AsyncAction _action;
 public:
-    explicit repeat_until_value_state(AsyncAction action) : _action(std::move(action)) {}
+    explicit repeat_until_value_state(AsyncAction action) : _action(std::move(action)) {
+        this->template set_task_type<repeat_until_value_state>();
+    }
     repeat_until_value_state(std::optional<T> st, AsyncAction action) : repeat_until_value_state(std::move(action)) {
         this->_state.set(std::move(st));
     }
     future<T> get_future() { return _promise.get_future(); }
-    task* waiting_task() noexcept override { return _promise.waiting_task(); }
-    virtual void run_and_dispose() noexcept override {
+    task* waiting_task() noexcept { return _promise.waiting_task(); }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         if (this->_state.failed()) {
             _promise.set_exception(std::move(this->_state).get_exception());
             delete this;
@@ -289,10 +293,12 @@ class do_until_state final : public continuation_base<> {
     StopCondition _stop;
     AsyncAction _action;
 public:
-    explicit do_until_state(StopCondition stop, AsyncAction action) : _stop(std::move(stop)), _action(std::move(action)) {}
+    explicit do_until_state(StopCondition stop, AsyncAction action) : _stop(std::move(stop)), _action(std::move(action)) {
+        this->template set_task_type<do_until_state>();
+    }
     future<> get_future() { return _promise.get_future(); }
-    task* waiting_task() noexcept override { return _promise.waiting_task(); }
-    virtual void run_and_dispose() noexcept override {
+    task* waiting_task() noexcept { return _promise.waiting_task(); }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         if (_state.available()) {
             if (_state.failed()) {
                 _promise.set_urgent_state(std::move(_state));
@@ -399,9 +405,10 @@ class do_for_each_state final : public continuation_base<> {
 public:
     do_for_each_state(Iterator begin, Sentinel end, AsyncAction action, future<>&& first_unavailable)
         : _begin(std::move(begin)), _end(std::move(end)), _action(std::move(action)) {
+        this->template set_task_type<do_for_each_state>();
         internal::set_callback(std::move(first_unavailable), this);
     }
-    virtual void run_and_dispose() noexcept override {
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         std::unique_ptr<do_for_each_state> zis(this);
         if (_state.failed()) {
             _pr.set_urgent_state(std::move(_state));
@@ -422,7 +429,7 @@ public:
         }
         _pr.set_value();
     }
-    task* waiting_task() noexcept override {
+    task* waiting_task() noexcept {
         return _pr.waiting_task();
     }
     future<> get_future() {
@@ -540,8 +547,9 @@ private:
     // decide what to do: wait for another one, or deliver _result if all
     // are complete.
     void wait_for_one() noexcept;
-    virtual void run_and_dispose() noexcept override;
-    task* waiting_task() noexcept override { return _result.waiting_task(); }
+    [[gnu::always_inline]] void run_and_dispose() noexcept;
+    task* waiting_task() noexcept { return _result.waiting_task(); }
+    friend class task;
 public:
     parallel_for_each_state(size_t n);
     void add_future(future<>&& f);

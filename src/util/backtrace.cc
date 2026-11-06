@@ -161,7 +161,7 @@ tasktrace current_tasktrace() noexcept {
                 hash ^= bt->hash();
                 prev.push_back({ bt, tsk->get_resume_point() });
             } else {
-                const std::type_info& ti = typeid(*tsk);
+                const std::type_info& ti = *tsk->task_info().type;
                 prev.push_back({ task_entry(ti), tsk->get_resume_point() });
                 hash ^= ti.hash_code();
             }

@@ -113,7 +113,7 @@ public:
     using value_tuple_type = typename future_type::tuple_type;
 private:
     /// \cond internal
-    class shared_state final : public enable_lw_shared_from_this<shared_state>, public task {
+    class shared_state final : public enable_lw_shared_from_this<shared_state>, public runnable_task {
         future_type _original_future;
         // Ensures that shared_state is alive until run_and_dispose() runs (if the task was scheduled)
         lw_shared_ptr<shared_state> _keepaliver;
@@ -144,10 +144,11 @@ private:
             }
         }
         explicit shared_state(future_type f) noexcept
-                : task(default_scheduling_group()) // SG is set later, when the task is scheduled
+                : runnable_task(default_scheduling_group()) // SG is set later, when the task is scheduled
                 , _original_future(std::move(f)) {
+            set_task_type<shared_state>();
         }
-        void run_and_dispose() noexcept override {
+        [[gnu::always_inline]] void run_and_dispose() noexcept {
             auto& state = _original_future._state;
             if (_original_future.failed()) {
                 while (_peers) {
@@ -171,7 +172,7 @@ private:
             _keepaliver.release();
         }
 
-        task* waiting_task() noexcept override {
+        task* waiting_task() noexcept {
             return nullptr;
         }
 

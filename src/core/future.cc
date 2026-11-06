@@ -26,7 +26,47 @@
 #include <seastar/util/backtrace.hh>
 #include <seastar/util/assert.hh>
 
+#include <bit>
+#include <cstdint>
+#include <unordered_map>
+
 namespace seastar {
+
+namespace internal {
+
+namespace {
+
+// Keyed by the function pointer's bits: std::hash has no specialization for
+// function pointers.
+using task_type_map = std::unordered_map<uintptr_t, const task_type_info*>;
+
+task_type_map& task_types() noexcept {
+    static task_type_map types;
+    return types;
+}
+
+uintptr_t task_type_key(task_run_fn run_fn) noexcept {
+    static_assert(sizeof(task_run_fn) == sizeof(uintptr_t));
+    return std::bit_cast<uintptr_t>(run_fn);
+}
+
+}
+
+void register_task_type(task_run_fn run_fn, const task_type_info& info) noexcept {
+    try {
+        task_types().emplace(task_type_key(run_fn), &info);
+    } catch (...) {
+        // Without an entry, diagnostics report the type as runnable_task.
+    }
+}
+
+const task_type_info* find_task_type(task_run_fn run_fn) noexcept {
+    auto& types = task_types();
+    auto it = types.find(task_type_key(run_fn));
+    return it == types.end() ? nullptr : it->second;
+}
+
+}
 
 // We can't test future_state_base directly because its private
 // destructor is protected.
@@ -228,17 +268,19 @@ void reactor::test::with_allow_abandoned_failed_futures(unsigned count, noncopya
 }
 
 namespace {
-class thread_wake_task final : public task {
+class thread_wake_task final : public runnable_task {
     thread_context* _thread;
 public:
-    thread_wake_task(thread_context* thread) noexcept : _thread(thread) {}
-    virtual void run_and_dispose() noexcept override {
+    thread_wake_task(thread_context* thread) noexcept : _thread(thread) {
+        set_task_type<thread_wake_task>();
+    }
+    [[gnu::always_inline]] void run_and_dispose() noexcept {
         thread_impl::switch_in(_thread);
         // no need to delete, since this is always allocated on
         // _thread's stack.
     }
     /// Returns the task which is waiting for this thread to be done, or nullptr.
-    virtual task* waiting_task() noexcept override {
+    task* waiting_task() noexcept {
         return _thread->waiting_task();
     }
 };
