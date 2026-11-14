@@ -4558,15 +4558,18 @@ unsigned smp::adjust_max_networking_aio_io_control_blocks(unsigned network_iocbs
 // be to just check the cpu weight of our top most cgroup slice. However, this
 // fails on k8s (and elsewhere) as they use private cgroup namespaces which
 // makes the pod only see its own weight.
+// CIAINFRA-2890
 static bool k8s_eevdf_deadlock() {
     const auto ku = internal::kernel_uname();
     if (!ku.whitelisted({"6.12"}) || ku.whitelisted({"7.1"})) {
         return false;
     }
-    // LTS series with the fixes backported. Note a three-component version only
-    // matches the same version.patchlevel series, so these exemptions don't
-    // apply to any other series.
-    if (ku.whitelisted({"6.12.94", "6.18.38"})) {
+    // LTS series with the fixes backported. 6.18.45 is the first 6.18 release
+    // with 62fefb817bb3, the backport of mainline 101f3498b4bd, which reverts
+    // the cause (6d71a9c61604).
+    // Note a three-component version only matches the same version.patchlevel
+    // series, so these exemptions don't apply to any other series.
+    if (ku.whitelisted({"6.12.94", "6.18.45"})) {
         return false;
     }
     return std::getenv("KUBERNETES_SERVICE_HOST") != nullptr;
