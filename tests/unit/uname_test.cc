@@ -74,3 +74,21 @@ BOOST_AUTO_TEST_CASE(test_xfs_concurrency_fix) {
     BOOST_REQUIRE_EQUAL(check("3.10.0-324.el7"), false);
     BOOST_REQUIRE_EQUAL(check("3.10.0-325.665.el7"), true);
 }
+
+// CIAINFRA-2890
+BOOST_AUTO_TEST_CASE(test_eevdf_lts_exemption) {
+    auto exempt = [] (const char* uname) {
+        return parse_uname(uname).whitelisted({"6.12.94", "6.18.45"});
+    };
+    BOOST_REQUIRE_EQUAL(exempt("6.18.38-76.139.amzn2023.aarch64"), false);
+    BOOST_REQUIRE_EQUAL(exempt("6.18.44-99.149.amzn2023.aarch64"), false);
+    BOOST_REQUIRE_EQUAL(exempt("6.18.44"), false);
+    BOOST_REQUIRE_EQUAL(exempt("6.18.45"), true);
+    BOOST_REQUIRE_EQUAL(exempt("6.18.48-107.148.amzn2023.aarch64"), true);
+    BOOST_REQUIRE_EQUAL(exempt("6.18.56-125.164.amzn2023.x86_64"), true);
+    BOOST_REQUIRE_EQUAL(exempt("6.12.0-281.el10.aarch64"), false);
+    BOOST_REQUIRE_EQUAL(exempt("6.12.0-160000.40-default"), false);
+    BOOST_REQUIRE_EQUAL(exempt("6.12.94-123.192.amzn2023.aarch64"), true);
+    BOOST_REQUIRE_EQUAL(exempt("6.17.0-1017-aws"), false);
+    BOOST_REQUIRE_EQUAL(exempt("7.0.0-1017-aws"), false);
+}
