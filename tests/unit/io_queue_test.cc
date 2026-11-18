@@ -35,6 +35,7 @@
 #include <seastar/core/file.hh>
 #include <seastar/core/io_queue.hh>
 #include <seastar/core/io_intent.hh>
+#include <seastar/core/metrics_api.hh>
 #include <seastar/core/disk_params.hh>
 #include <seastar/core/internal/io_request.hh>
 #include <seastar/core/internal/io_sink.hh>
@@ -702,6 +703,76 @@ SEASTAR_THREAD_TEST_CASE(test_destroy_priority_class_with_requests) {
     tio.queue.destroy_priority_class(internal::priority_class(sg));
     destroy_scheduling_group(sg).get();
     BOOST_REQUIRE(!tio.is_class_registered(pc));
+}
+
+// The integrated queue length metrics count the time requests spend queued
+// and executing, whether or not the queue is polled meanwhile.
+SEASTAR_THREAD_TEST_CASE(test_integrated_queue_length_metrics) {
+    io_queue_for_tests tio;
+    auto sg = create_scheduling_group("integral", 100).get();
+    auto pc = internal::priority_class(sg);
+
+    auto metric = [] (const char* name) -> uint64_t {
+        const auto& map = metrics::impl::get_value_map();
+        auto family = map.find(fmt::format("io_queue_{}", name));
+        BOOST_REQUIRE(family != map.end());
+        for (const auto& [labels, m] : family->second) {
+            auto cl = labels.labels().find("class");
+            if (cl != labels.labels().end() && cl->second.value() == "integral") {
+                return (*m)().ui();
+            }
+        }
+        BOOST_FAIL(fmt::format("no {} metric for class integral", name));
+        return 0;
+    };
+
+    constexpr unsigned nr = 20;
+    constexpr auto hold = std::chrono::milliseconds(300);
+    // nr requests held for `hold` integrate to nr * 0.3 = 6 request-seconds;
+    // the metrics truncate to whole seconds and the clock is a lowres one
+    auto expected_lo = 5u, expected_hi = 7u;
+
+    std::vector<future<size_t>> done;
+    for (unsigned i = 0; i < nr; i++) {
+        done.push_back(tio.queue_request(pc,
+            internal::io_direction_and_length(internal::io_direction_and_length::write_idx, 1),
+            internal::io_request::make_write(0, 0, nullptr, 1, false),
+            nullptr, {}));
+    }
+
+    // queued, never polled
+    auto q0 = metric("integrated_queue_length");
+    sleep(hold).get();
+    auto q1 = metric("integrated_queue_length");
+    BOOST_REQUIRE_GE(q1 - q0, expected_lo);
+    BOOST_REQUIRE_LE(q1 - q0, expected_hi);
+
+    // dispatched, not completed
+    for (int i = 0; i < 1000 && metric("queue_length") != 0; i++) {
+        tio.queue.poll_io_queue();
+        yield().get();
+    }
+    BOOST_REQUIRE_EQUAL(metric("queue_length"), 0);
+    BOOST_REQUIRE_EQUAL(metric("disk_queue_length"), nr);
+    auto q2 = metric("integrated_queue_length");
+    auto e0 = metric("integrated_disk_queue_length");
+    sleep(hold).get();
+    auto e1 = metric("integrated_disk_queue_length");
+    BOOST_REQUIRE_GE(e1 - e0, expected_lo);
+    BOOST_REQUIRE_LE(e1 - e0, expected_hi);
+    BOOST_REQUIRE_EQUAL(metric("integrated_queue_length"), q2);
+
+    tio.sink.drain([] (const internal::io_request& rq, io_completion* desc) -> bool {
+        desc->complete_with(1);
+        return true;
+    });
+    for (auto& f : done) {
+        BOOST_REQUIRE_EQUAL(f.get(), 1);
+    }
+    BOOST_REQUIRE_EQUAL(metric("disk_queue_length"), 0);
+
+    tio.queue.destroy_priority_class(pc);
+    destroy_scheduling_group(sg).get();
 }
 
 SEASTAR_THREAD_TEST_CASE(test_gauge_integrator_test) {

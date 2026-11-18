@@ -233,7 +233,11 @@ public:
         SEASTAR_ASSERT(_nr_executing == 0);
     }
 
+    // _nr_queued and _nr_executing are integrated over time for the
+    // integrated_*queue_length metrics: each change is preceded by a
+    // checkpoint, which adds the old value times the time it was held.
     void on_queue() noexcept {
+        _nr_queued.checkpoint();
         _nr_queued++;
         if (_nr_executing == 0 && _nr_queued == 1) {
             _activated = io_queue::clock_type::now();
@@ -244,6 +248,9 @@ public:
         _rwstat[dnl.rw_idx()].add(dnl.length());
         _queue_time = lat;
         _total_queue_time += lat;
+        auto now = lowres_clock::now();
+        _nr_queued.checkpoint(now);
+        _nr_executing.checkpoint(now);
         _nr_queued--;
         _nr_executing++;
         if (_nr_executing == 1) {
@@ -257,11 +264,13 @@ public:
     }
 
     void on_cancel() noexcept {
+        _nr_queued.checkpoint();
         _nr_queued--;
     }
 
     void on_complete(std::chrono::duration<double> lat) noexcept {
         _total_execution_time += lat;
+        _nr_executing.checkpoint();
         _nr_executing--;
         if (_nr_executing == 0 && _nr_queued != 0) {
             _activated = io_queue::clock_type::now();
@@ -269,6 +278,7 @@ public:
     }
 
     void on_error() noexcept {
+        _nr_executing.checkpoint();
         _nr_executing--;
         if (_nr_executing == 0 && _nr_queued != 0) {
             _activated = io_queue::clock_type::now();
@@ -277,14 +287,6 @@ public:
 
     void on_split(io_direction_and_length dnl) noexcept {
         _splits.add(dnl.length());
-    }
-
-    void on_before_dispatch() noexcept {
-        _nr_queued.checkpoint();
-    }
-
-    void on_after_dispatch() noexcept {
-        _nr_executing.checkpoint();
     }
 
     fair_queue::class_id fq_class() const noexcept { return _pc.id(); }
@@ -834,8 +836,14 @@ std::vector<seastar::metrics::impl::metric_definition_impl> io_queue::priority_c
             }, sm::description("random delay time in the queue")),
             sm::make_gauge("shares", _shares, sm::description("current amount of shares")),
 
-            sm::make_counter("integrated_queue_length", [this] { return _nr_queued.integral(); }, sm::description("Integrated queue length")),
-            sm::make_counter("integrated_disk_queue_length", [this] { return _nr_executing.integral(); }, sm::description("Integrated disk queue length")),
+            sm::make_counter("integrated_queue_length", [this] {
+                _nr_queued.checkpoint();
+                return _nr_queued.integral();
+            }, sm::description("Integrated queue length")),
+            sm::make_counter("integrated_disk_queue_length", [this] {
+                _nr_executing.checkpoint();
+                return _nr_executing.integral();
+            }, sm::description("Integrated disk queue length")),
     });
 }
 
@@ -1128,12 +1136,6 @@ future<size_t> io_queue::submit_io_write(size_t len, internal::io_request req, i
 // This is far from ideal, but it's something.
 
 void io_queue::poll_io_queue() {
-    for (auto& pc : _priority_classes) {
-        if (pc) {
-            pc->on_before_dispatch();
-        }
-    }
-
     for (auto&& st : _streams) {
         st.out.maybe_replenish_capacity(st.replenish);
         auto available = st.reap_pending_capacity();
@@ -1165,12 +1167,6 @@ void io_queue::poll_io_queue() {
         // unpleasant (it can bloat the bucket beyond its size limit, and its hard to write a correct
         // countermeasure for that), so we just discard the tokens. There's no harm in it, IO cancellation
         // can't have resource-saving guarantees anyway.
-    }
-
-    for (auto& pc : _priority_classes) {
-        if (pc) {
-            pc->on_after_dispatch();
-        }
     }
 }
 
