@@ -214,6 +214,11 @@ add_tristate(
     help='Debug shared_ptr')
 add_tristate(
     arg_parser,
+    name='perf-test-declared-rates',
+    dest='perf_test_declared_rates',
+    help='honoring the iteration rates declared by perf tests')
+add_tristate(
+    arg_parser,
     name='io_uring',
     dest='io_uring',
     help='Support io_uring via liburing')
@@ -318,6 +323,8 @@ def configure_mode(mode):
         tr(args.deferred_action_require_noexcept, 'DEFERRED_ACTION_REQUIRE_NOEXCEPT'),
         tr(args.unused_result_error, 'UNUSED_RESULT_ERROR'),
         tr(args.debug_shared_ptr, 'DEBUG_SHARED_PTR', value_when_none='default'),
+        tr(args.perf_test_declared_rates, 'PERF_TESTS_HONOR_DECLARED_RATE',
+           value_when_none='DEFAULT'),
     ]
 
     if not which('ninja-build') and which('ninja'):
